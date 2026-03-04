@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: vapi-interview-webhook
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
