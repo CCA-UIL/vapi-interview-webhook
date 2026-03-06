@@ -17,7 +17,8 @@ const ccToTz = {
   "+233": "Africa/Accra",
   "+27": "Africa/Johannesburg",
   "+44": "Europe/London",
-  "+91": "Asia/Kolkata"
+  "+91": "Asia/Kolkata",
+  "+33": "Europe/Paris"
 };
 
 function inferTimezone(number) {
