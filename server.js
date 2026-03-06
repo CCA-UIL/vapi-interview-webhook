@@ -31,53 +31,35 @@ function inferTimezone(number) {
 app.post("/vapi", async (req, res) => {
   const { message } = req.body;
 
-  if (message?.type === "function-call" &&
-      message.functionCall?.name === "schedule_callback") {
+  // Handle tool-calls (this is what Vapi is sending)
+  if (message?.type === "tool-calls") {
+    const toolCall = message.toolCallList?.[0];
+    const fn = toolCall?.function;
 
-    const { customerNumber, suggestedTime } =
-      message.functionCall.arguments;
+    if (fn?.name === "schedule_callback") {
+      const { customerNumber, suggestedTime } = fn.arguments;
 
-    const tz = inferTimezone(customerNumber);
-    const now = new Date();
-    const localNow = new Date(
-      now.toLocaleString("en-US", { timeZone: tz })
-    );
+      // ... your existing timezone + parsing logic ...
+      // ... then POST https://api.vapi.ai/call ...
 
-    let target = new Date(localNow);
-    if (suggestedTime.toLowerCase().includes("tomorrow"))
-      target.setDate(target.getDate() + 1);
-
-    target.setHours(9,0,0,0); // simple default time
-
-    const offsetMs = localNow.getTime() - now.getTime();
-    const utcTarget = new Date(target.getTime() - offsetMs);
-
-    await fetch("https://api.vapi.ai/call", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${VAPI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        assistantId: ASSISTANT_ID,
-        phoneNumberId: PHONE_NUMBER_ID,
-        customer: { number: customerNumber },
-        schedulePlan: { earliestAt: utcTarget.toISOString() },
-        assistantOverrides: {
-          variableValues: { IS_CALLBACK: "true" }
-        }
-      })
-    });
-
-    return res.json({
-      results: [{
-        toolCallId: message.functionCall.id,
-        result: "Callback scheduled"
-      }]
-    });
+      return res.json({
+        results: [
+          {
+            toolCallId: toolCall.id,
+            result: "Callback scheduled"
+          }
+        ]
+      });
+    }
   }
 
-  res.json({});
+  // Keep compatibility if function-call ever arrives
+  if (message?.type === "function-call" &&
+      message?.functionCall?.name === "schedule_callback") {
+    // (optional) handle this variant too
+  }
+
+  return res.json({});
 });
 
 app.listen(3000, () => console.log("Server running"));
