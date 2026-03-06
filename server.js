@@ -31,7 +31,6 @@ function inferTimezone(number) {
 app.post("/vapi", async (req, res) => {
   const { message } = req.body;
 
-  // Handle tool-calls (this is what Vapi is sending)
   if (message?.type === "tool-calls") {
     const toolCall = message.toolCallList?.[0];
     const fn = toolCall?.function;
@@ -39,24 +38,61 @@ app.post("/vapi", async (req, res) => {
     if (fn?.name === "schedule_callback") {
       const { customerNumber, suggestedTime } = fn.arguments;
 
-      // ... your existing timezone + parsing logic ...
-      // ... then POST https://api.vapi.ai/call ...
+      const timezone = inferTimezone(customerNumber);
+
+      const now = new Date();
+      const localNow = new Date(
+        now.toLocaleString("en-US", { timeZone: timezone })
+      );
+
+      let target = new Date(localNow);
+
+      const lower = suggestedTime.toLowerCase();
+
+      if (lower.includes("tomorrow"))
+        target.setDate(target.getDate() + 1);
+
+      const matchHour = lower.match(/(\d+)\s*minute/);
+      if (matchHour)
+        target.setMinutes(target.getMinutes() + parseInt(matchHour[1]));
+
+      target.setSeconds(0, 0);
+
+      const offsetMs = localNow.getTime() - now.getTime();
+      const utcTarget = new Date(target.getTime() - offsetMs);
+
+      // ✅ ACTUAL CALL CREATION
+      const response = await fetch("https://api.vapi.ai/call", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${VAPI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          assistantId: ASSISTANT_ID,
+          phoneNumberId: PHONE_NUMBER_ID,
+          customer: { number: customerNumber },
+          schedulePlan: {
+            earliestAt: utcTarget.toISOString()
+          },
+          assistantOverrides: {
+            variableValues: {
+              IS_CALLBACK: "true"
+            }
+          }
+        })
+      });
+
+      const result = await response.json();
+      console.log("Schedule response:", result);
 
       return res.json({
-        results: [
-          {
-            toolCallId: toolCall.id,
-            result: "Callback scheduled"
-          }
-        ]
+        results: [{
+          toolCallId: toolCall.id,
+          result: "Callback scheduled"
+        }]
       });
     }
-  }
-
-  // Keep compatibility if function-call ever arrives
-  if (message?.type === "function-call" &&
-      message?.functionCall?.name === "schedule_callback") {
-    // (optional) handle this variant too
   }
 
   return res.json({});
