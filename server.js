@@ -9,7 +9,7 @@ const ASSISTANT_ID = process.env.ASSISTANT_ID;
 const PHONE_NUMBER_ID = "6c89fc63-3d8d-4eca-98e9-ff9798ac5f9c";
 
 const ccToTz = {
-  "+1": "America/New_York",
+  "+1": "America/New_York",   // Add relevant codes and locations, using official IANA database label for geographic location.
   "+254": "Africa/Nairobi",
   "+256": "Africa/Kampala",
   "+255": "Africa/Dar_es_Salaam",
