@@ -22,6 +22,27 @@ const ccToTz = {
   "+33": "Europe/Paris"
 };
 
+// Prevent scheduling twice (tool-call + end-of-call-report) for the same call
+const scheduledByCallId = new Map(); // callId -> timestampMs
+
+function markScheduled(callId) {
+  if (!callId) return;
+  scheduledByCallId.set(callId, Date.now());
+}
+
+function wasScheduled(callId) {
+  if (!callId) return false;
+  // expire entries after 1 hour to prevent memory growth
+  const ts = scheduledByCallId.get(callId);
+  if (!ts) return false;
+  if (Date.now() - ts > 60 * 60 * 1000) {
+    scheduledByCallId.delete(callId);
+    return false;
+  }
+  return true;
+}
+
+
 function inferTimezone(number = "") {
   const codes = Object.keys(ccToTz).sort((a, b) => b.length - a.length);
   for (const c of codes) {
@@ -185,72 +206,88 @@ app.post("/vapi", async (req, res) => {
 
         await scheduleCallback({ customerNumber, earliestAtIso: utcTarget.toISOString() });
 
+        const callId = message?.call?.id;
+
+        const callId = message?.call?.id;
+        
+        if (!callId) {
+          console.log("tool-calls schedule_callback: missing message.call.id; dedupe may not work");
+        }
+        markScheduled(callId);
+
         return res.json({
-          results: [{ toolCallId: toolCall.id, result: "Callback scheduled" }]
+           results: [{ toolCallId: toolCall.id, result: "Callback scheduled" }]
         });
       }
 
       return res.json({ results: [] });
     }
 
-    // ✅ end-of-call-report path
-    if (message?.type === "end-of-call-report") {
-      const call = message.call;
+// ✅ end-of-call-report path (fallback only)
+if (message?.type === "end-of-call-report") {
+  const callId = message?.call?.id;
 
-      const customerNumber =
-        call?.customer?.number ||
-        message?.customer?.number;
+  if (wasScheduled(callId)) {
+    console.log("Skipping end-of-call scheduling; already scheduled via tool-calls", { callId });
+    return res.json({});
+  }
 
-      const transcript =
-        message?.artifact?.transcript ||
-        call?.artifact?.transcript ||
-        message?.transcript ||
-        call?.transcript ||
-        "";
+  const call = message.call;
 
-      if (!customerNumber) {
-        console.log("end-of-call-report received but no customer number found");
-        return res.json({});
-      }
+  const customerNumber =
+    call?.customer?.number ||
+    message?.customer?.number;
 
-      const timezone = inferTimezone(customerNumber);
-      const suggestedTimeText = extractSuggestedTimeFromTranscript(transcript);
+  const transcript =
+    message?.artifact?.transcript ||
+    call?.artifact?.transcript ||
+    message?.transcript ||
+    call?.transcript ||
+    "";
 
-      if (!suggestedTimeText) {
-        console.log("No suggested time found in transcript. customer:", customerNumber);
-        return res.json({});
-      }
+  if (!customerNumber) {
+    console.log("end-of-call-report received but no customer number found");
+    return res.json({});
+  }
 
-      const parsed = parseSuggestedTimeToLocalDate({
-        suggestedTimeText,
-        timezone,
-        customerNumber
-      });
+  const timezone = inferTimezone(customerNumber);
+  const suggestedTimeText = extractSuggestedTimeFromTranscript(transcript);
 
-      if (!parsed) {
-        console.log("Found suggested time text but could not parse:", suggestedTimeText);
-        return res.json({});
-      }
+  if (!suggestedTimeText) {
+    console.log("No suggested time found in transcript. customer:", customerNumber);
+    return res.json({});
+  }
 
-      const { targetLocal, localNow, nowUtc } = parsed;
-      const offsetMs = localNow.getTime() - nowUtc.getTime();
-      const utcTarget = new Date(targetLocal.getTime() - offsetMs);
+  const parsed = parseSuggestedTimeToLocalDate({
+    suggestedTimeText,
+    timezone,
+    customerNumber
+  });
 
-      const scheduled = await scheduleCallback({
-        customerNumber,
-        earliestAtIso: utcTarget.toISOString()
-      });
+  if (!parsed) {
+    console.log("Found suggested time text but could not parse:", suggestedTimeText);
+    return res.json({});
+  }
 
-      console.log("Callback scheduled from end-of-call-report:", {
-        customerNumber,
-        timezone,
-        suggestedTimeText,
-        utcTarget: utcTarget.toISOString(),
-        scheduledCallId: scheduled?.id
-      });
+  const { targetLocal, localNow, nowUtc } = parsed;
+  const offsetMs = localNow.getTime() - nowUtc.getTime();
+  const utcTarget = new Date(targetLocal.getTime() - offsetMs);
 
-      return res.json({});
-    }
+  const scheduled = await scheduleCallback({
+    customerNumber,
+    earliestAtIso: utcTarget.toISOString()
+  });
+
+  console.log("Callback scheduled from end-of-call-report:", {
+    customerNumber,
+    timezone,
+    suggestedTimeText,
+    utcTarget: utcTarget.toISOString(),
+    scheduledCallId: scheduled?.id
+  });
+
+  return res.json({});
+}
 
     return res.json({});
   } catch (err) {
