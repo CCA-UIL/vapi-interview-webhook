@@ -145,7 +145,7 @@ async function scheduleCallback({ customerNumber, earliestAtIso }) {
 
 app.post("/vapi", async (req, res) => {
   try {
-    const { message } = req.body;
+    const m = req.body?.message;
     console.log("Webhook summary:", {
       type: m?.type,
       endedReason: m?.endedReason,
