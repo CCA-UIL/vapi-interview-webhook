@@ -145,9 +145,20 @@ async function scheduleCallback({ customerNumber, earliestAtIso }) {
 
 app.post("/vapi", async (req, res) => {
   try {
-    console.log("Webhook payload:", JSON.stringify(req.body, null, 2));
     const { message } = req.body;
+    console.log("Webhook summary:", {
+      type: m?.type,
+      endedReason: m?.endedReason,
+      customer: m?.customer?.number || m?.call?.customer?.number,
+      transcript:
+        m?.artifact?.transcript ||
+        m?.call?.artifact?.transcript ||
+        m?.transcript ||
+        m?.call?.transcript
+  });
 
+
+    
     // Keep old tool-calls path (optional)
     if (message?.type === "tool-calls") {
       const toolCall = message.toolCallList?.[0];
