@@ -145,20 +145,19 @@ async function scheduleCallback({ customerNumber, earliestAtIso }) {
 
 app.post("/vapi", async (req, res) => {
   try {
-    const m = req.body?.message;
+    const message = req.body?.message; // <-- use ONE variable name everywhere
+
     console.log("Webhook summary:", {
-      type: m?.type,
-      endedReason: m?.endedReason,
-      customer: m?.customer?.number || m?.call?.customer?.number,
+      type: message?.type,
+      endedReason: message?.endedReason,
+      customer: message?.customer?.number || message?.call?.customer?.number,
       transcript:
-        m?.artifact?.transcript ||
-        m?.call?.artifact?.transcript ||
-        m?.transcript ||
-        m?.call?.transcript
-  });
+        message?.artifact?.transcript ||
+        message?.call?.artifact?.transcript ||
+        message?.transcript ||
+        message?.call?.transcript
+    });
 
-
-    
     // Keep old tool-calls path (optional)
     if (message?.type === "tool-calls") {
       const toolCall = message.toolCallList?.[0];
@@ -194,17 +193,18 @@ app.post("/vapi", async (req, res) => {
       return res.json({ results: [] });
     }
 
-    // ✅ NEW: end-of-call-report path
+    // ✅ end-of-call-report path
     if (message?.type === "end-of-call-report") {
       const call = message.call;
 
       const customerNumber =
         call?.customer?.number ||
-        call?.customer?.phoneNumber ||
-        call?.customer?.callerNumber;
+        message?.customer?.number;
 
       const transcript =
+        message?.artifact?.transcript ||
         call?.artifact?.transcript ||
+        message?.transcript ||
         call?.transcript ||
         "";
 
@@ -233,8 +233,6 @@ app.post("/vapi", async (req, res) => {
       }
 
       const { targetLocal, localNow, nowUtc } = parsed;
-
-      // Convert “local target” -> UTC by applying the local-vs-utc offset at *now* (good enough for near-term callbacks)
       const offsetMs = localNow.getTime() - nowUtc.getTime();
       const utcTarget = new Date(targetLocal.getTime() - offsetMs);
 
@@ -257,7 +255,6 @@ app.post("/vapi", async (req, res) => {
     return res.json({});
   } catch (err) {
     console.error("Webhook error:", err);
-    // Always 200 to avoid Vapi retry storms; log for debugging.
     return res.status(200).json({});
   }
 });
