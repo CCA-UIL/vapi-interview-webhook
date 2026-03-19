@@ -207,13 +207,13 @@ app.post("/vapi", async (req, res) => {
         await scheduleCallback({ customerNumber, earliestAtIso: utcTarget.toISOString() });
 
         const callId = message?.call?.id;
-
-        const callId = message?.call?.id;
         
         if (!callId) {
           console.log("tool-calls schedule_callback: missing message.call.id; dedupe may not work");
         }
-        markScheduled(callId);
+       
+        const dedupeKey = callId || `${customerNumber}:${suggestedTime}`;
+        markScheduled(dedupeKey);
 
         return res.json({
            results: [{ toolCallId: toolCall.id, result: "Callback scheduled" }]
@@ -225,10 +225,11 @@ app.post("/vapi", async (req, res) => {
 
 // ✅ end-of-call-report path (fallback only)
 if (message?.type === "end-of-call-report") {
-  const callId = message?.call?.id;
+  const callIdKey = message?.call?.id || message?.callId;
+  const timeKey = `${customerNumber}:${suggestedTimeText}`;
 
-  if (wasScheduled(callId)) {
-    console.log("Skipping end-of-call scheduling; already scheduled via tool-calls", { callId });
+  if (wasScheduled(callIdKey) || wasScheduled(timeKey)) {
+    console.log("Skipping end-of-call scheduling; already scheduled via tool-calls", { callIdKey, timeKey });
     return res.json({});
   }
 
