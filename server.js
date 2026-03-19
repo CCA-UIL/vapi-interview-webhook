@@ -254,7 +254,10 @@ app.post("/vapi", async (req, res) => {
         markScheduled(dedupeKey);
 
         return res.json({
-           results: [{ toolCallId: toolCall.toolCallId || toolCall.id, result: "Callback scheduled" }]
+          results: [{
+            toolCallId: toolCall.toolCallId || toolCall.id,
+            result: `Callback scheduled. Confirm to the user: "Got it — I’ll call you back in ${suggestedTime}."`
+          }]
         });
       }
 
