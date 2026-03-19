@@ -9,6 +9,12 @@ const ASSISTANT_ID = process.env.ASSISTANT_ID;
 // NOTE: you hard-coded this; consider moving to env var later.
 const PHONE_NUMBER_ID = "6c89fc63-3d8d-4eca-98e9-ff9798ac5f9c";
 
+const DEFAULT_VARIABLE_VALUES = {
+  INTERVIEW_MAX_MINUTES: process.env.INTERVIEW_MAX_MINUTES || "60",
+  SCREENING_QUESTIONS_JSON: process.env.SCREENING_QUESTIONS_JSON || "[]",
+  INTERVIEW_PHASES_JSON: process.env.INTERVIEW_PHASES_JSON || "[]"
+};
+
 const ccToTz = {
   "+1": "America/New_York",
   "+254": "Africa/Nairobi",
@@ -152,7 +158,12 @@ async function scheduleCallback({ customerNumber, earliestAtIso }) {
       customer: { number: customerNumber },
       schedulePlan: { earliestAt: earliestAtIso },
       assistantOverrides: {
-        variableValues: { IS_CALLBACK: "true" }
+              variableValues: {
+                  INTERVIEW_MAX_MINUTES: DEFAULT_VARIABLE_VALUES.INTERVIEW_MAX_MINUTES,
+                  SCREENING_QUESTIONS_JSON: DEFAULT_VARIABLE_VALUES.SCREENING_QUESTIONS_JSON,
+                  INTERVIEW_PHASES_JSON: DEFAULT_VARIABLE_VALUES.INTERVIEW_PHASES_JSON,
+                  IS_CALLBACK: "true"
+              }
       }
     })
   });
