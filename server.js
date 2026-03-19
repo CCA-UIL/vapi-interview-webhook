@@ -145,7 +145,7 @@ function extractSuggestedTimeFromTranscript(transcript = "") {
   return null;
 }
 
-async function scheduleCallback({ customerNumber, earliestAtIso }) {
+async function scheduleCallback({ assistantId, customerNumber, earliestAtIso }) {
   const response = await fetch("https://api.vapi.ai/call", {
     method: "POST",
     headers: {
@@ -153,17 +153,15 @@ async function scheduleCallback({ customerNumber, earliestAtIso }) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      assistantId: ASSISTANT_ID,
+      assistantId: assistantId || ASSISTANT_ID,
       phoneNumberId: PHONE_NUMBER_ID,
       customer: { number: customerNumber },
       schedulePlan: { earliestAt: earliestAtIso },
       assistantOverrides: {
-              variableValues: {
-                  INTERVIEW_MAX_MINUTES: DEFAULT_VARIABLE_VALUES.INTERVIEW_MAX_MINUTES,
-                  SCREENING_QUESTIONS_JSON: DEFAULT_VARIABLE_VALUES.SCREENING_QUESTIONS_JSON,
-                  INTERVIEW_PHASES_JSON: DEFAULT_VARIABLE_VALUES.INTERVIEW_PHASES_JSON,
-                  IS_CALLBACK: "true"
-              }
+        variableValues: {
+          ...DEFAULT_VARIABLE_VALUES,
+          IS_CALLBACK: "true"
+        }
       }
     })
   });
@@ -171,6 +169,28 @@ async function scheduleCallback({ customerNumber, earliestAtIso }) {
   const result = await response.json();
   if (!response.ok) {
     throw new Error(`Vapi call schedule failed: ${response.status} ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
+async function startImmediateCall({ assistantId, customerNumber, variableValues }) {
+  const response = await fetch("https://api.vapi.ai/call", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${VAPI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      assistantId,
+      phoneNumberId: PHONE_NUMBER_ID,
+      customer: { number: customerNumber },
+      assistantOverrides: { variableValues }
+    })
+  });
+
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(`Vapi start call failed: ${response.status} ${JSON.stringify(result)}`);
   }
   return result;
 }
@@ -196,8 +216,7 @@ app.post("/vapi", async (req, res) => {
       const fn = toolCall?.function;
 
       if (fn?.name === "schedule_callback") {
-        const { customerNumber, suggestedTime } = fn.arguments;
-
+        const { customerNumber, suggestedTime } = fn.arguments || {};
         const timezone = inferTimezone(customerNumber);
         const parsed = parseSuggestedTimeToLocalDate({
           suggestedTimeText: suggestedTime,
@@ -215,8 +234,16 @@ app.post("/vapi", async (req, res) => {
         const offsetMs = localNow.getTime() - nowUtc.getTime();
         const utcTarget = new Date(targetLocal.getTime() - offsetMs);
 
-        await scheduleCallback({ customerNumber, earliestAtIso: utcTarget.toISOString() });
-
+        const assistantIdForCallback =
+          message?.call?.assistantId ||
+          message?.assistant?.id ||
+          ASSISTANT_ID;
+        
+        await scheduleCallback({
+          assistantId: assistantIdForCallback,
+          customerNumber,
+          earliestAtIso: utcTarget.toISOString()
+        });
         const callId = message?.call?.id;
         
         if (!callId) {
@@ -227,7 +254,7 @@ app.post("/vapi", async (req, res) => {
         markScheduled(dedupeKey);
 
         return res.json({
-           results: [{ toolCallId: toolCall.id, result: "Callback scheduled" }]
+           results: [{ toolCallId: toolCall.toolCallId || toolCall.id, result: "Callback scheduled" }]
         });
       }
 
@@ -236,20 +263,12 @@ app.post("/vapi", async (req, res) => {
 
 // ✅ end-of-call-report path (fallback only)
 if (message?.type === "end-of-call-report") {
-  const callIdKey = message?.call?.id || message?.callId;
-  const timeKey = `${customerNumber}:${suggestedTimeText}`;
-
-  if (wasScheduled(callIdKey) || wasScheduled(timeKey)) {
-    console.log("Skipping end-of-call scheduling; already scheduled via tool-calls", { callIdKey, timeKey });
-    return res.json({});
-  }
-
   const call = message.call;
-
+  
   const customerNumber =
     call?.customer?.number ||
     message?.customer?.number;
-
+  
   const transcript =
     message?.artifact?.transcript ||
     call?.artifact?.transcript ||
@@ -269,6 +288,15 @@ if (message?.type === "end-of-call-report") {
     console.log("No suggested time found in transcript. customer:", customerNumber);
     return res.json({});
   }
+  
+  // ✅ dedupe keys (ONLY after we have customerNumber + suggestedTimeText)
+  const callIdKey = message?.call?.id || message?.callId;
+  const timeKey = `${customerNumber}:${suggestedTimeText}`;
+
+  if (wasScheduled(callIdKey) || wasScheduled(timeKey)) {
+    console.log("Skipping end-of-call scheduling; already scheduled via tool-calls", { callIdKey, timeKey });
+    return res.json({});
+  }
 
   const parsed = parseSuggestedTimeToLocalDate({
     suggestedTimeText,
@@ -285,10 +313,20 @@ if (message?.type === "end-of-call-report") {
   const offsetMs = localNow.getTime() - nowUtc.getTime();
   const utcTarget = new Date(targetLocal.getTime() - offsetMs);
 
+ const assistantIdForCallback =
+  message?.call?.assistantId ||
+  message?.assistant?.id ||
+  ASSISTANT_ID;
+
   const scheduled = await scheduleCallback({
+    assistantId: assistantIdForCallback,
     customerNumber,
     earliestAtIso: utcTarget.toISOString()
   });
+
+
+// ✅ mark scheduled so repeated reports don’t double-schedule
+  markScheduled(callIdKey || timeKey);
 
   console.log("Callback scheduled from end-of-call-report:", {
     customerNumber,
@@ -305,6 +343,37 @@ if (message?.type === "end-of-call-report") {
   } catch (err) {
     console.error("Webhook error:", err);
     return res.status(200).json({});
+  }
+});
+
+  app.post("/start-call", async (req, res) => {
+  try {
+    const { customerNumber, assistantId } = req.body || {};
+
+    if (!customerNumber) {
+      return res.status(400).json({ error: "Missing customerNumber" });
+    }
+    if (!assistantId) {
+      return res.status(400).json({ error: "Missing assistantId" });
+    }
+
+    const started = await startImmediateCall({
+      assistantId,
+      customerNumber,
+      variableValues: {
+        ...DEFAULT_VARIABLE_VALUES,
+        IS_CALLBACK: "false"
+      }
+    });
+
+    return res.json({
+      ok: true,
+      callId: started?.id,
+      status: started?.status
+    });
+  } catch (err) {
+    console.error("start-call error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
