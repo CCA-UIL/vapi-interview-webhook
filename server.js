@@ -213,36 +213,6 @@ async function startImmediateCall({ assistantId, customerNumber, variableValues 
   return result;
 }
 
-async function sendWrapupBackgroundMessage(callId, secondsRemaining) {
-  const url = `https://api.vapi.ai/call/${callId}/background-messages`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.VAPI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messages: [
-        {
-          role: "system",
-          content:
-            `Time check: approximately ${secondsRemaining} seconds remaining in the interview. ` +
-            `Start wrapping up now. Ask any final critical questions, summarize the key points briefly, ` +
-            `thank the participant, and end the call.`
-        }
-      ]
-    })
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    console.log("wrapup background-message failed:", res.status, text);
-  } else {
-    console.log("wrapup background-message sent:", { callId, secondsRemaining });
-  }
-}
-
 
 app.post("/vapi", async (req, res) => {
   try {
@@ -269,9 +239,26 @@ if (message?.type === "status-update") {
       const isLastPhase = i === phases.length - 1;
       const delayMs = cumulativeSeconds * 1000;
 
-      const content = isLastPhase
-        ? `Time check: the interview is at its end. Wrap up now. Ask any final critical question, summarize key points briefly, thank the participant, and end the call.`
-        : `Time check: transition to the next interview phase now. Smoothly close the current topic and begin the next phase’s questions.`;
+    let content;
+
+    if (isLastPhase) {
+      content =
+        `Time check: the interview is at its end. Start wrapping up now. ` +
+        `Say something like: "That’s all I have. Thank you for your time." ` +
+        `Then end the call.`;
+    } else {
+      const nextPhase = phases[i + 1];
+      const nextTopic = nextPhase?.name || "the next topic";
+    
+      const transitionSay =
+        `Now we’re going to start the next part of the interview. ` +
+        `I’d like to ask you about ${nextTopic}.`;
+    
+      content =
+        `Time check: transition now. ` +
+        `You MUST say this sentence to the user before asking the next question: "${transitionSay}" ` +
+        `Then immediately begin the next topic with one clear question.`;
+    }
 
       console.log("Scheduling phase boundary message:", {
         callId,
@@ -279,19 +266,20 @@ if (message?.type === "status-update") {
         phaseName: phase?.name,
         maxSeconds,
         cumulativeSeconds,
-        isLastPhase
+        isLastPhase,
+        delayMs
       });
 
-    const t = setTimeout(() => {
-      fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${VAPI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ messages: [{ role: "system", content }] })
-      }).catch((e) => console.log("phase boundary send error:", e));
-    }, delayMs);
+      const t = setTimeout(() => {
+        fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${VAPI_API_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ messages: [{ role: "system", content }] })
+        }).catch((e) => console.log("phase boundary send error:", e));
+      }, delayMs);
 
       timers.push(t);
     }
@@ -380,6 +368,12 @@ if (message?.type === "status-update") {
 // ✅ end-of-call-report path (fallback only)
 if (message?.type === "end-of-call-report") {
   const call = message.call;
+  
+  const callId = message?.call?.id;
+  
+  const timers = wrapupTimers.get(callId);
+  if (Array.isArray(timers)) timers.forEach(clearTimeout);
+  wrapupTimers.delete(callId);
   
   const customerNumber =
     call?.customer?.number ||
