@@ -282,20 +282,16 @@ if (message?.type === "status-update") {
         isLastPhase
       });
 
-      const t = setTimeout(() => {
-        sendWrapupBackgroundMessage(callId, 0 /* not used here */)
-          .catch(() => {}); // keep your existing function if you want
-
-        // Better: send the specific content for this boundary
-        fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${VAPI_API_KEY}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ messages: [{ role: "system", content }] })
-        }).catch((e) => console.log("phase boundary send error:", e));
-      }, delayMs);
+    const t = setTimeout(() => {
+      fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${VAPI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ messages: [{ role: "system", content }] })
+      }).catch((e) => console.log("phase boundary send error:", e));
+    }, delayMs);
 
       timers.push(t);
     }
