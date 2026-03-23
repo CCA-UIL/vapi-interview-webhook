@@ -229,47 +229,40 @@ if (message?.type === "status-update") {
 
     let cumulativeSeconds = 0;
     const timers = [];
-
+    
     for (let i = 0; i < phases.length; i++) {
       const phase = phases[i];
-      const maxSeconds = Number(phase?.maxSeconds || 0);
-      if (!maxSeconds) continue;
-
-      cumulativeSeconds += maxSeconds;
+      const transitionAtSeconds = Number(phase?.transitionAtSeconds || 0);
+      if (!transitionAtSeconds) continue;
+    
+      cumulativeSeconds += transitionAtSeconds;
       const isLastPhase = i === phases.length - 1;
       const delayMs = cumulativeSeconds * 1000;
-
-    let content;
-
-    if (isLastPhase) {
-      content =
-        `Time check: the interview is at its end. Start wrapping up now. ` +
-        `Say something like: "That’s all I have. Thank you for your time." ` +
-        `Then end the call.`;
-    } else {
-      const nextPhase = phases[i + 1];
-      const nextTopic = nextPhase?.name || "the next topic";
     
-      const transitionSay =
-        `Now we’re going to start the next part of the interview. ` +
-        `I’d like to ask you about ${nextTopic}.`;
+      let content;
+      if (isLastPhase) {
+        content =
+          `Timing rule: you have reached the end of the interview. Wrap up now. ` +
+          `Summarize key points briefly, thank the participant, and end the call.`;
+      } else {
+        const nextPhase = phases[i + 1];
+        const nextTopic = nextPhase?.name || "the next topic";
+        content =
+          `Timing rule: transition now. ` +
+          `You MUST say: "Now we’re going to start the next part of the interview. I’d like to ask you about ${nextTopic}." ` +
+          `Then immediately begin the next topic with one clear question.`;
+      }
     
-      content =
-        `Time check: transition now. ` +
-        `You MUST say this sentence to the user before asking the next question: "${transitionSay}" ` +
-        `Then immediately begin the next topic with one clear question.`;
-    }
-
-      console.log("Scheduling phase boundary message:", {
+      console.log("Scheduling transition boundary:", {
         callId,
         phaseIndex: i + 1,
         phaseName: phase?.name,
-        maxSeconds,
+        transitionAtSeconds,
         cumulativeSeconds,
-        isLastPhase,
-        delayMs
+        delayMs,
+        isLastPhase
       });
-
+    
       const t = setTimeout(() => {
         fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
           method: "POST",
@@ -278,12 +271,12 @@ if (message?.type === "status-update") {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({ messages: [{ role: "system", content }] })
-        }).catch((e) => console.log("phase boundary send error:", e));
+        }).catch((e) => console.log("transition boundary send error:", e));
       }, delayMs);
-
+    
       timers.push(t);
     }
-
+    
     wrapupTimers.set(callId, timers);
     return res.json({ ok: true });
   }
