@@ -3,7 +3,8 @@ import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
-
+const qstashScheduledCallIds = new Set();
+const baseMs = Date.now();
 const VAPI_API_KEY = process.env.VAPI_API_KEY;
 const ASSISTANT_ID = process.env.ASSISTANT_ID;
 // NOTE: you hard-coded this; consider moving to env var later.
@@ -30,7 +31,6 @@ const ccToTz = {
 
 // Prevent scheduling twice (tool-call + end-of-call-report) for the same call
 const scheduledByCallId = new Map(); // callId -> timestampMs
-const wrapupTimers = new Map(); // callId -> Timeout[]
 
 function markScheduled(callId) {
   if (!callId) return;
@@ -213,6 +213,20 @@ async function startImmediateCall({ assistantId, customerNumber, variableValues 
   return result;
 }
 
+async function qstashSchedule({ runAtIso, body }) {
+  const resp = await fetch("https://qstash.upstash.io/v2/publish/https://vapi-interview-webhook.onrender.com/timing/transition", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.QSTASH_TOKEN}`,
+      "Content-Type": "application/json",
+      "Upstash-Not-Before": runAtIso
+    },
+    body: JSON.stringify(body)
+  });
+
+  const text = await resp.text();
+  console.log("QStash schedule resp", resp.status, text);
+}
 
 app.post("/vapi", async (req, res) => {
   try {
@@ -224,11 +238,11 @@ if (message?.type === "status-update") {
   const callId = message?.call?.id;
 
   // schedule once when call begins
-  if (status === "in-progress" && callId && !wrapupTimers.has(callId)) {
+  if (status === "in-progress" && callId && !qstashScheduledCallIds.has(callId)) {
+    qstashScheduledCallIds.add(callId);
     const phases = getPhasesFromMessage(message);
 
     let cumulativeSeconds = 0;
-    const timers = [];
     
     for (let i = 0; i < phases.length; i++) {
       const phase = phases[i];
@@ -263,29 +277,19 @@ if (message?.type === "status-update") {
         isLastPhase
       });
     
-      const t = setTimeout(() => {
-        fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${VAPI_API_KEY}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ messages: [{ role: "system", content }] })
-        }).catch((e) => console.log("transition boundary send error:", e));
-      }, delayMs);
+    const baseMs = message?.call?.startedAt
+      ? new Date(message.call.startedAt).getTime()
+      : Date.now();
     
-      timers.push(t);
+    const runAtIso = new Date(baseMs + delayMs).toISOString();
+    
+    await qstashSchedule({
+      runAtIso,
+      body: { callId, content }
+    });
+    
     }
     
-    wrapupTimers.set(callId, timers);
-    return res.json({ ok: true });
-  }
-
-  // cleanup when call ends
-  if (status === "ended" && callId) {
-    const timers = wrapupTimers.get(callId);
-    if (Array.isArray(timers)) timers.forEach(clearTimeout);
-    wrapupTimers.delete(callId);
     return res.json({ ok: true });
   }
 
@@ -363,11 +367,7 @@ if (message?.type === "end-of-call-report") {
   const call = message.call;
   
   const callId = message?.call?.id;
-  
-  const timers = wrapupTimers.get(callId);
-  if (Array.isArray(timers)) timers.forEach(clearTimeout);
-  wrapupTimers.delete(callId);
-  
+
   const customerNumber =
     call?.customer?.number ||
     message?.customer?.number;
@@ -448,6 +448,30 @@ if (message?.type === "end-of-call-report") {
     return res.status(200).json({});
   }
 });
+
+  app.post("/timing/transition", async (req, res) => {
+    try {
+      const { callId, content } = req.body || {};
+      if (!callId || !content) return res.status(400).json({ error: "Missing callId/content" });
+  
+      const resp = await fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${VAPI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ messages: [{ role: "system", content }] })
+      });
+  
+      const text = await resp.text();
+      console.log("timing/transition -> vapi background-messages", resp.status, text);
+  
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error("timing/transition error", e);
+      return res.status(500).json({ ok: false });
+    }
+  });
 
   app.post("/start-call", async (req, res) => {
   try {
