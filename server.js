@@ -30,7 +30,7 @@ const ccToTz = {
 
 // Prevent scheduling twice (tool-call + end-of-call-report) for the same call
 const scheduledByCallId = new Map(); // callId -> timestampMs
-const wrapupTimers = new Map(); // callId -> timeout
+const wrapupTimers = new Map(); // callId -> Timeout[]
 
 function markScheduled(callId) {
   if (!callId) return;
@@ -146,6 +146,23 @@ function extractSuggestedTimeFromTranscript(transcript = "") {
   return null;
 }
 
+function safeJsonParse(str, fallback) {
+  try {
+    return JSON.parse(str);
+  } catch {
+    return fallback;
+  }
+}
+
+function getPhasesFromMessage(message) {
+  const raw =
+    message?.call?.assistantOverrides?.variableValues?.INTERVIEW_PHASES_JSON ||
+    DEFAULT_VARIABLE_VALUES.INTERVIEW_PHASES_JSON ||
+    "[]";
+  return safeJsonParse(raw, []);
+}
+
+
 async function scheduleCallback({ assistantId, customerNumber, earliestAtIso }) {
   const response = await fetch("https://api.vapi.ai/call", {
     method: "POST",
@@ -231,53 +248,72 @@ app.post("/vapi", async (req, res) => {
   try {
     const message = req.body?.message; // <-- use ONE variable name everywhere
 
-// ✅ status-update handler (for wrap-up escalation timers)
+// ✅ status-update handler: schedule phase boundary escalation messages
 if (message?.type === "status-update") {
   const status = message?.status;
   const callId = message?.call?.id;
 
-  // schedule once when call actually begins
+  // schedule once when call begins
   if (status === "in-progress" && callId && !wrapupTimers.has(callId)) {
-    const interviewMaxMinutes = Number(
-      message?.call?.assistantOverrides?.variableValues?.INTERVIEW_MAX_MINUTES ||
-      DEFAULT_VARIABLE_VALUES.INTERVIEW_MAX_MINUTES ||
-      60
-    );
+    const phases = getPhasesFromMessage(message);
 
-    // TESTING: wrap up with 20 seconds remaining
-    const secondsRemaining = 20;
+    let cumulativeSeconds = 0;
+    const timers = [];
 
-    // when to send the message (ms after call becomes in-progress)
-    const delayMs = Math.max(0, (interviewMaxMinutes * 60 - secondsRemaining) * 1000);
+    for (let i = 0; i < phases.length; i++) {
+      const phase = phases[i];
+      const maxSeconds = Number(phase?.maxSeconds || 0);
+      if (!maxSeconds) continue;
 
-    console.log("Scheduling wrapup timer:", {
-      callId,
-      status,
-      interviewMaxMinutes,
-      secondsRemaining,
-      delayMs
-    });
+      cumulativeSeconds += maxSeconds;
+      const isLastPhase = i === phases.length - 1;
+      const delayMs = cumulativeSeconds * 1000;
 
-    const t = setTimeout(() => {
-      sendWrapupBackgroundMessage(callId, secondsRemaining).catch((e) =>
-        console.log("wrapup timer error:", e)
-      );
-    }, delayMs);
+      const content = isLastPhase
+        ? `Time check: the interview is at its end. Wrap up now. Ask any final critical question, summarize key points briefly, thank the participant, and end the call.`
+        : `Time check: transition to the next interview phase now. Smoothly close the current topic and begin the next phase’s questions.`;
 
-    wrapupTimers.set(callId, t);
+      console.log("Scheduling phase boundary message:", {
+        callId,
+        phaseIndex: i + 1,
+        phaseName: phase?.name,
+        maxSeconds,
+        cumulativeSeconds,
+        isLastPhase
+      });
+
+      const t = setTimeout(() => {
+        sendWrapupBackgroundMessage(callId, 0 /* not used here */)
+          .catch(() => {}); // keep your existing function if you want
+
+        // Better: send the specific content for this boundary
+        fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${VAPI_API_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ messages: [{ role: "system", content }] })
+        }).catch((e) => console.log("phase boundary send error:", e));
+      }, delayMs);
+
+      timers.push(t);
+    }
+
+    wrapupTimers.set(callId, timers);
+    return res.json({ ok: true });
   }
 
   // cleanup when call ends
   if (status === "ended" && callId) {
-    const t = wrapupTimers.get(callId);
-    if (t) clearTimeout(t);
+    const timers = wrapupTimers.get(callId);
+    if (Array.isArray(timers)) timers.forEach(clearTimeout);
     wrapupTimers.delete(callId);
+    return res.json({ ok: true });
   }
 
-  // important: acknowledge webhook
   return res.json({ ok: true });
 }
-
 
     
     console.log("Webhook summary:", {
