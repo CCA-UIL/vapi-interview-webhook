@@ -30,6 +30,7 @@ const ccToTz = {
 
 // Prevent scheduling twice (tool-call + end-of-call-report) for the same call
 const scheduledByCallId = new Map(); // callId -> timestampMs
+const wrapupTimers = new Map(); // callId -> timeout
 
 function markScheduled(callId) {
   if (!callId) return;
@@ -195,10 +196,90 @@ async function startImmediateCall({ assistantId, customerNumber, variableValues 
   return result;
 }
 
+async function sendWrapupBackgroundMessage(callId, secondsRemaining) {
+  const url = `https://api.vapi.ai/call/${callId}/background-messages`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.VAPI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messages: [
+        {
+          role: "system",
+          content:
+            `Time check: approximately ${secondsRemaining} seconds remaining in the interview. ` +
+            `Start wrapping up now. Ask any final critical questions, summarize the key points briefly, ` +
+            `thank the participant, and end the call.`
+        }
+      ]
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.log("wrapup background-message failed:", res.status, text);
+  } else {
+    console.log("wrapup background-message sent:", { callId, secondsRemaining });
+  }
+}
+
+
 app.post("/vapi", async (req, res) => {
   try {
     const message = req.body?.message; // <-- use ONE variable name everywhere
 
+// ✅ status-update handler (for wrap-up escalation timers)
+if (message?.type === "status-update") {
+  const status = message?.status;
+  const callId = message?.call?.id;
+
+  // schedule once when call actually begins
+  if (status === "in-progress" && callId && !wrapupTimers.has(callId)) {
+    const interviewMaxMinutes = Number(
+      message?.call?.assistantOverrides?.variableValues?.INTERVIEW_MAX_MINUTES ||
+      DEFAULT_VARIABLE_VALUES.INTERVIEW_MAX_MINUTES ||
+      60
+    );
+
+    // TESTING: wrap up with 20 seconds remaining
+    const secondsRemaining = 20;
+
+    // when to send the message (ms after call becomes in-progress)
+    const delayMs = Math.max(0, (interviewMaxMinutes * 60 - secondsRemaining) * 1000);
+
+    console.log("Scheduling wrapup timer:", {
+      callId,
+      status,
+      interviewMaxMinutes,
+      secondsRemaining,
+      delayMs
+    });
+
+    const t = setTimeout(() => {
+      sendWrapupBackgroundMessage(callId, secondsRemaining).catch((e) =>
+        console.log("wrapup timer error:", e)
+      );
+    }, delayMs);
+
+    wrapupTimers.set(callId, t);
+  }
+
+  // cleanup when call ends
+  if (status === "ended" && callId) {
+    const t = wrapupTimers.get(callId);
+    if (t) clearTimeout(t);
+    wrapupTimers.delete(callId);
+  }
+
+  // important: acknowledge webhook
+  return res.json({ ok: true });
+}
+
+
+    
     console.log("Webhook summary:", {
       type: message?.type,
       endedReason: message?.endedReason,
