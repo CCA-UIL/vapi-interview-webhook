@@ -230,6 +230,26 @@ async function qstashSchedule({ notBeforeSeconds, body }) {
   console.log("QStash schedule resp", resp.status, text);
 }
 
+
+async function injectSystemMessageViaControlUrl({ controlUrl, content }) {
+  const resp = await fetch(controlUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "add-message",
+      message: { role: "system", content }
+    })
+  });
+
+  const text = await resp.text();
+  console.log("controlUrl add-message resp", resp.status, text);
+  return { status: resp.status, body: text };
+}
+
+
+
+
+
 app.post("/vapi", async (req, res) => {
   try {
     const message = req.body?.message; // <-- use ONE variable name everywhere
@@ -238,7 +258,8 @@ app.post("/vapi", async (req, res) => {
 if (message?.type === "status-update") {
   const status = message?.status;
   const callId = message?.call?.id;
-
+  const controlUrl = message?.call?.monitor?.controlUrl;
+  
   console.log("monitor urls:", {
     callId,
     listenUrl: message?.call?.monitor?.listenUrl,
@@ -251,39 +272,29 @@ if (message?.type === "status-update") {
   // schedule once when call begins
   if (status === "in-progress" && callId && !qstashScheduledCallIds.has(callId)) {
     qstashScheduledCallIds.add(callId);
-
+  
     const phases = getPhasesFromMessage(message);
-
-    // ✅ lock Eric into phase 1 until the timed transition message arrives
+  
     const phase1 = phases?.[0]?.name || "the first topic";
     const lockMsg =
       `Silent internal instruction (do NOT read aloud): ` +
       `Timing rule: you are currently on "${phase1}". ` +
       `Do NOT move to the next part until you receive: "Timing rule: transition now". ` +
       `Until then, keep asking follow-up questions only about "${phase1}".`;
-
-    try {
-      const lockResp = await fetch(`https://api.vapi.ai/v2/call/${callId}/background-messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${VAPI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ messages: [{ role: "system", content: lockMsg }] })
-      });
-
-      const lockText = await lockResp.text();
-      console.log("Sent phase lock message:", { callId, status: lockResp.status, body: lockText });
-    } catch (e) {
-      console.log("Failed sending phase lock message:", { callId, error: String(e) });
-    }
-
+  
+      try {
+        if (controlUrl) {
+          await injectSystemMessageViaControlUrl({ controlUrl, content: lockMsg });
+          console.log("Sent phase lock message via controlUrl", { callId });
+        } else {
+          console.log("Missing controlUrl; cannot inject lock message", { callId });
+        }
+      } catch (e) {
+        console.log("Failed sending phase lock message via controlUrl:", { callId, error: String(e) });
+      }
 
     // ✅ Anchor to call start (preferred). Fall back to now if missing.
-    const baseMs =
-      (message?.call?.startedAt && Date.parse(message.call.startedAt)) ||
-      (message?.call?.createdAt && Date.parse(message.call.createdAt)) ||
-      Date.now();
+     const baseMs = Date.now();
     
     let cumulativeSeconds = 0;
 
@@ -327,9 +338,9 @@ if (message?.type === "status-update") {
         isLastPhase
       });
 
-     await qstashSchedule({
+      await qstashSchedule({
         notBeforeSeconds,
-        body: { callId, content }
+        body: { callId, controlUrl, content }
       });
     }
 
@@ -492,29 +503,20 @@ if (message?.type === "end-of-call-report") {
   }
 });
 
-  app.post("/timing/transition", async (req, res) => {
-    try {
-      const { callId, content } = req.body || {};
-      if (!callId || !content) return res.status(400).json({ error: "Missing callId/content" });
-  
-      const resp = await fetch(`https://api.vapi.ai/v2/call/${callId}/background-messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${VAPI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ messages: [{ role: "system", content }] })
-      });
-  
-      const text = await resp.text();
-      console.log("timing/transition -> vapi background-messages", resp.status, text);
-  
-      return res.json({ ok: true });
-    } catch (e) {
-      console.error("timing/transition error", e);
-      return res.status(500).json({ ok: false });
-    }
-  });
+    app.post("/timing/transition", async (req, res) => {
+      try {
+        const { callId, controlUrl, content } = req.body || {};
+        if (!controlUrl || !content) {
+          return res.status(400).json({ error: "Missing controlUrl/content" });
+        }
+    
+        await injectSystemMessageViaControlUrl({ controlUrl, content });
+        return res.json({ ok: true });
+      } catch (e) {
+        console.error("timing/transition error", e);
+        return res.status(500).json({ ok: false });
+      }
+    });
 
   app.post("/start-call", async (req, res) => {
   try {
