@@ -239,6 +239,12 @@ if (message?.type === "status-update") {
   const status = message?.status;
   const callId = message?.call?.id;
 
+  console.log("monitor urls:", {
+    callId,
+    listenUrl: message?.call?.monitor?.listenUrl,
+    controlUrl: message?.call?.monitor?.controlUrl
+  });
+  
   console.log("status-update received:", { callId, status });
   if (status === "ended" && callId) qstashScheduledCallIds.delete(callId);
   
