@@ -212,16 +212,19 @@ async function startImmediateCall({ assistantId, customerNumber, variableValues 
   return result;
 }
 
-async function qstashSchedule({ runAtIso, body }) {
-  const resp = await fetch("https://qstash.upstash.io/v2/publish/https://vapi-interview-webhook.onrender.com/timing/transition", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.QSTASH_TOKEN}`,
-      "Content-Type": "application/json",
-      "Upstash-Not-Before": runAtIso
-    },
-    body: JSON.stringify(body)
-  });
+async function qstashSchedule({ notBeforeSeconds, body }) {
+  const resp = await fetch(
+    "https://qstash.upstash.io/v2/publish/https://vapi-interview-webhook.onrender.com/timing/transition",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.QSTASH_TOKEN}`,
+        "Content-Type": "application/json",
+        "Upstash-Not-Before": String(notBeforeSeconds)
+      },
+      body: JSON.stringify(body)
+    }
+  );
 
   const text = await resp.text();
   console.log("QStash schedule resp", resp.status, text);
@@ -248,12 +251,13 @@ if (message?.type === "status-update") {
     // ✅ lock Eric into phase 1 until the timed transition message arrives
     const phase1 = phases?.[0]?.name || "the first topic";
     const lockMsg =
+      `Silent internal instruction (do NOT read aloud): ` +
       `Timing rule: you are currently on "${phase1}". ` +
       `Do NOT move to the next part until you receive: "Timing rule: transition now". ` +
       `Until then, keep asking follow-up questions only about "${phase1}".`;
 
     try {
-      const lockResp = await fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
+      const lockResp = await fetch(`https://api.vapi.ai/v2/call/${callId}/background-messages`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${VAPI_API_KEY}`,
@@ -289,8 +293,13 @@ if (message?.type === "status-update") {
       let content;
       if (isLastPhase) {
         content =
-          `Timing rule: you have reached the end of the interview. Wrap up now. ` +
-          `Summarize key points briefly, thank the participant, and end the call.`;
+          `Silent internal instruction (do NOT read aloud): Timing rule: end interview now. ` +
+          `Do this now:\n` +
+          `1) Give a brief 1–2 sentence summary of what you heard.\n` +
+          `2) Thank the participant.\n` +
+          `3) Ask one final: "Is there anything else you'd like to add?"\n` +
+          `4) If they add something, acknowledge briefly.\n` +
+          `5) Then say goodbye and end the call.`;
       } else {
         const nextPhase = phases[i + 1];
         const nextTopic = nextPhase?.name || "the next topic";
@@ -301,20 +310,19 @@ if (message?.type === "status-update") {
             `2) Then begin the next topic: "${nextTopic}" with ONE clear question.`;
        }
 
-      const runAtIso = new Date(baseMs + delayMs).toISOString();
-
+      const notBeforeSeconds = Math.floor((baseMs + delayMs) / 1000);
+     
       console.log("QStash scheduling transition:", {
         callId,
         phaseIndex: i + 1,
         phaseName: phase?.name,
         transitionAtSeconds,
         cumulativeSeconds,
-        runAtIso,
         isLastPhase
       });
 
-      await qstashSchedule({
-        runAtIso,
+     await qstashSchedule({
+        notBeforeSeconds,
         body: { callId, content }
       });
     }
@@ -483,7 +491,7 @@ if (message?.type === "end-of-call-report") {
       const { callId, content } = req.body || {};
       if (!callId || !content) return res.status(400).json({ error: "Missing callId/content" });
   
-      const resp = await fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
+      const resp = await fetch(`https://api.vapi.ai/v2/call/${callId}/background-messages`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${VAPI_API_KEY}`,
