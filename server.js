@@ -268,9 +268,13 @@ if (message?.type === "status-update") {
       console.log("Failed sending phase lock message:", { callId, error: String(e) });
     }
 
-    // ✅ Anchor once per call
-    const baseMs = Date.now();
 
+    // ✅ Anchor to call start (preferred). Fall back to now if missing.
+    const baseMs =
+      (message?.call?.startedAt && Date.parse(message.call.startedAt)) ||
+      (message?.call?.createdAt && Date.parse(message.call.createdAt)) ||
+      Date.now();
+    
     let cumulativeSeconds = 0;
 
     for (let i = 0; i < phases.length; i++) {
@@ -290,11 +294,12 @@ if (message?.type === "status-update") {
       } else {
         const nextPhase = phases[i + 1];
         const nextTopic = nextPhase?.name || "the next topic";
-        content =
-          `Timing rule: transition now. ` +
-          `You MUST say: "Now we’re going to start the next part of the interview. I’d like to ask you about ${nextTopic}." ` +
-          `Then immediately begin the next topic with one clear question.`;
-      }
+       content =
+            `Silent internal instruction (do NOT read aloud): Timing rule: transition now. ` +
+            `Now do this:\n` +
+            `1) Say a natural transition sentence to the user (do not say 'Timing rule').\n` +
+            `2) Then begin the next topic: "${nextTopic}" with ONE clear question.`;
+       }
 
       const runAtIso = new Date(baseMs + delayMs).toISOString();
 
