@@ -4,7 +4,6 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 const qstashScheduledCallIds = new Set();
-const baseMs = Date.now();
 const VAPI_API_KEY = process.env.VAPI_API_KEY;
 const ASSISTANT_ID = process.env.ASSISTANT_ID;
 // NOTE: you hard-coded this; consider moving to env var later.
@@ -237,22 +236,52 @@ if (message?.type === "status-update") {
   const status = message?.status;
   const callId = message?.call?.id;
 
+  console.log("status-update received:", { callId, status });
+  if (status === "ended" && callId) qstashScheduledCallIds.delete(callId);
+  
   // schedule once when call begins
   if (status === "in-progress" && callId && !qstashScheduledCallIds.has(callId)) {
     qstashScheduledCallIds.add(callId);
+
     const phases = getPhasesFromMessage(message);
 
+    // ✅ lock Eric into phase 1 until the timed transition message arrives
+    const phase1 = phases?.[0]?.name || "the first topic";
+    const lockMsg =
+      `Timing rule: you are currently on "${phase1}". ` +
+      `Do NOT move to the next part until you receive: "Timing rule: transition now". ` +
+      `Until then, keep asking follow-up questions only about "${phase1}".`;
+
+    try {
+      const lockResp = await fetch(`https://api.vapi.ai/call/${callId}/background-messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${VAPI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ messages: [{ role: "system", content: lockMsg }] })
+      });
+
+      const lockText = await lockResp.text();
+      console.log("Sent phase lock message:", { callId, status: lockResp.status, body: lockText });
+    } catch (e) {
+      console.log("Failed sending phase lock message:", { callId, error: String(e) });
+    }
+
+    // ✅ Anchor once per call
+    const baseMs = Date.now();
+
     let cumulativeSeconds = 0;
-    
+
     for (let i = 0; i < phases.length; i++) {
       const phase = phases[i];
       const transitionAtSeconds = Number(phase?.transitionAtSeconds || 0);
       if (!transitionAtSeconds) continue;
-    
+
       cumulativeSeconds += transitionAtSeconds;
       const isLastPhase = i === phases.length - 1;
       const delayMs = cumulativeSeconds * 1000;
-    
+
       let content;
       if (isLastPhase) {
         content =
@@ -266,30 +295,25 @@ if (message?.type === "status-update") {
           `You MUST say: "Now we’re going to start the next part of the interview. I’d like to ask you about ${nextTopic}." ` +
           `Then immediately begin the next topic with one clear question.`;
       }
-    
-      console.log("Scheduling transition boundary:", {
+
+      const runAtIso = new Date(baseMs + delayMs).toISOString();
+
+      console.log("QStash scheduling transition:", {
         callId,
         phaseIndex: i + 1,
         phaseName: phase?.name,
         transitionAtSeconds,
         cumulativeSeconds,
-        delayMs,
+        runAtIso,
         isLastPhase
       });
-    
-    const baseMs = message?.call?.startedAt
-      ? new Date(message.call.startedAt).getTime()
-      : Date.now();
-    
-    const runAtIso = new Date(baseMs + delayMs).toISOString();
-    
-    await qstashSchedule({
-      runAtIso,
-      body: { callId, content }
-    });
-    
+
+      await qstashSchedule({
+        runAtIso,
+        body: { callId, content }
+      });
     }
-    
+
     return res.json({ ok: true });
   }
 
