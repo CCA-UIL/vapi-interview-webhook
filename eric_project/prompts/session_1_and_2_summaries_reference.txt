@@ -1,0 +1,92 @@
+<session_1_summary>
+Participant: Solo mother managing household alone for a few years after family dissolved. Three children in household (manages everything for them herself, handles all cooking and household tasks).
+
+HOUSEHOLD & ENVIRONMENT:
+- Household changed from extended family sharing responsibilities to solo management a few years ago.
+- Kitchen: small, just off the main living area, functional with the basics.
+- Appliances: electric stove and electric pressure cooker (primary cooking appliances).
+- Kitchen preference: likes that appliances are quiet; would make the kitchen bigger if she could.
+- Privacy as value: prefers neighbors not to know her business; the neighborhood has nosy neighbors.
+- Tight cooking space — usually just her in the kitchen when cooking.
+
+COOKING RHYTHM & DECISIONS:
+- Weekly meals: rice and beans, vegetables with ugali, lentils, chapati and stew, pasta, pilau on Sundays.
+- Groups meals into: staple meals (rice, beans), quick meals (pasta), and more involved weekend meals (pilau).
+- Decision drivers: time available, ingredients on hand, energy level after work.
+- Time wins when factors compete: she has to finish quickly to help her three kids with homework.
+- Favorite meal: pilau. Mother used to make it on Sundays when whole family came over. Kitchen smelled like woodsmoke. "It reminds me of family gatherings and my mother's cooking. It's a comforting meal that brings back good memories."
+
+COOKING IDENTITY & LEARNING:
+- Learned to cook from her mother by watching and helping in the kitchen — hands-on, not formal lessons.
+- Mother's kitchen "always filled with the aroma of spices and woodsmoke."
+- Still makes pilau and chapati "the way my mother taught me" with sentimental value, but has had to adjust the method "especially with the appliances I use now."
+- Relationship to cooking: "a bit of both" — enjoys it when she has an extra hour or so, but often it's just something that needs to get done quickly.
+
+GENDER ROLES & SOCIAL EXPECTATIONS:
+- Cooking mostly falls to her, but kids sometimes help with small tasks when available — equally regardless of son or daughter, based on availability.
+- Community standard for "good cook": makes tasty meals with whatever ingredients are available, prepares traditional dishes well.
+- Feels community expectations "in the background" rather than as personal pressure: focuses on making meals that work for her family and fit the routine.
+- Generational shift observed: more juggling of work and household responsibilities now, less time for elaborate meals, convenience and efficiency more important.
+- Has had to adapt to the shift: "I do miss having more time to cook like my mother did."
+
+KEY THEMES:
+- Privacy as value (quiet appliances, nosy neighbors).
+- Nostalgia and tradition (pilau, mother's kitchen, woodsmoke).
+- Solo management of three children as primary time constraint.
+- Time wins over ingredients and energy because of homework demands.
+- Inherited practice (pilau, chapati) modified by current appliances.
+- Generational shift in time available for cooking.
+</session_1_summary>
+
+<session_2_summary>
+Pre-EPC fuel history:
+- Cooked with charcoal before the pressure cooker.
+- Charcoal cost was around Ksh 100 per day, which became unaffordable on her income alone.
+- Moved away primarily because of cost.
+
+Acquisition story:
+- Sold a piece of jewelry to buy the electric pressure cooker.
+- Described the decision as "tough but necessary for managing the household better."
+
+Functional job (what the EPC was hired to do):
+- Reduce cooking cost (charcoal was too expensive).
+- More efficient — quicker than charcoal.
+- Quieter — privacy from nosy neighbors mattered as a secondary functional driver.
+
+Emotional and social job:
+- The EPC sits in "a different world" from her mother's kitchen with woodsmoke. She articulated this directly when probed.
+- Frames it as a trade-off: "The pressure cooker makes things easier for me now, but it doesn't carry the same warmth and nostalgia as those memories of my mother's kitchen."
+- Privacy reinforced — the EPC's quietness helps her not draw neighbor attention.
+
+EPC integration and use:
+- Uses the EPC for simple dishes: beans, stews, lentils.
+- Does NOT use it for pilau. Still makes pilau "the old way" because using the EPC "might change the taste and the experience, and I don't want to lose that connection to my mother's kitchen."
+- Cautious about complex dishes generally — worries about flavor outcomes.
+- The EPC typically does part of a meal, with other things cooking on the stove at the same time. Not a whole-meal appliance.
+
+Decision rule for which method to use:
+- Simple dishes → pressure cooker (convenience).
+- Complex/traditional dishes → traditional methods (flavor and experience preservation).
+
+Community and social positioning:
+- Pressure cookers are not common in her area; most neighbors use traditional methods.
+- The pressure cooker is private — she doesn't discuss it with neighbors. Quietness helps maintain that privacy.
+- Privacy framed as a household value: "I prefer not to have neighbors knowing too much about my household."
+
+Cooking with electricity (medium-level reflection, separate from device):
+- Best things: convenience, efficiency, quicker and cleaner than charcoal.
+- Worst thing: "the reliance on electricity, which can be unpredictable at times."
+
+Design feedback and EPC-specific aspirations:
+- Wishes the EPC could handle more complex dishes better.
+- Finds it straightforward to use overall, but wants to feel more confident with complex dishes.
+- Would recommend it to others for convenience and efficiency, especially for simple dishes; pitches the quietness as a privacy benefit.
+- Future EPC aspiration: become more comfortable using it for complex dishes and expand variety of meals prepared with it.
+
+KEY SESSION 2 THEMES:
+- The EPC is a functional/efficiency tool, not a cultural or emotional tool. Sharp boundary between everyday EPC cooking and ritual/inherited cooking (pilau).
+- Privacy continues from Session 1 — the EPC's quietness is a secondary but real reason for purchase.
+- Confidence boundary: simple dishes yes, complex dishes no. The boundary has held over time and is the participant's main remaining EPC-related growth area.
+- Electricity reliability is a real constraint she has noticed — not just a device-level concern.
+- The "different world" framing is the participant's own articulation of the trade-off between practical convenience and nostalgic continuity.
+</session_2_summary>

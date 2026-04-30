@@ -1,19 +1,45 @@
 import express from "express";
 import fetch from "node-fetch";
+import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 app.use(express.json());
-const qstashScheduledCallIds = new Set();
+
+// =============================================================================
+// Environment
+// =============================================================================
+
 const VAPI_API_KEY = process.env.VAPI_API_KEY;
 const ASSISTANT_ID = process.env.ASSISTANT_ID;
-// NOTE: you hard-coded this; consider moving to env var later.
-const PHONE_NUMBER_ID = "6c89fc63-3d8d-4eca-98e9-ff9798ac5f9c";
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const QSTASH_TOKEN = process.env.QSTASH_TOKEN;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const RENDER_BASE_URL = process.env.RENDER_BASE_URL;
+const INTERVIEW_MAX_MINUTES = parseInt(process.env.INTERVIEW_MAX_MINUTES || "45", 10);
+const SCREENING_QUESTIONS_JSON = process.env.SCREENING_QUESTIONS_JSON || "[]";
+const WRAPUP_OFFSET_MINUTES = parseInt(process.env.WRAPUP_OFFSET_MINUTES || "2", 10);
 
-const DEFAULT_VARIABLE_VALUES = {
-  INTERVIEW_MAX_MINUTES: process.env.INTERVIEW_MAX_MINUTES || "60",
-  SCREENING_QUESTIONS_JSON: process.env.SCREENING_QUESTIONS_JSON || "[]",
-  INTERVIEW_PHASES_JSON: process.env.INTERVIEW_PHASES_JSON || "[]"
+const requiredEnv = {
+  VAPI_API_KEY,
+  ASSISTANT_ID,
+  PHONE_NUMBER_ID,
+  QSTASH_TOKEN,
+  SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY,
+  RENDER_BASE_URL
 };
+for (const [k, v] of Object.entries(requiredEnv)) {
+  if (!v) console.warn(`WARNING: env var ${k} is not set`);
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { autoRefreshToken: false, persistSession: false }
+});
+
+// =============================================================================
+// Constants and helpers
+// =============================================================================
 
 const ccToTz = {
   "+1": "America/New_York",
@@ -28,57 +54,21 @@ const ccToTz = {
   "+33": "Europe/Paris"
 };
 
-// Prevent scheduling twice (tool-call + end-of-call-report) for the same call
-const scheduledByCallId = new Map(); // callId -> timestampMs
-
-function markScheduled(callId) {
-  if (!callId) return;
-  scheduledByCallId.set(callId, Date.now());
-}
-
-function wasScheduled(callId) {
-  if (!callId) return false;
-  // expire entries after 1 hour to prevent memory growth
-  const ts = scheduledByCallId.get(callId);
-  if (!ts) return false;
-  if (Date.now() - ts > 60 * 60 * 1000) {
-    scheduledByCallId.delete(callId);
-    return false;
-  }
-  return true;
-}
-
-
 function inferTimezone(number = "") {
   const codes = Object.keys(ccToTz).sort((a, b) => b.length - a.length);
-  for (const c of codes) {
-    if (number.startsWith(c)) return ccToTz[c];
-  }
+  for (const c of codes) if (number.startsWith(c)) return ccToTz[c];
   return "UTC";
 }
 
-/**
- * Very small parser for “tomorrow”, “in X minutes”, and “at 3pm/15:30”.
- * Returns a Date in the *customer local time basis* (represented as a JS Date),
- * plus metadata used by caller to convert to UTC.
- */
-function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone, customerNumber }) {
+function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
   if (!suggestedTimeText) return null;
-
   const nowUtc = new Date();
-
-  // "Local now" represented in JS Date by formatting into that TZ then parsing.
   const localNow = new Date(nowUtc.toLocaleString("en-US", { timeZone: timezone }));
   let targetLocal = new Date(localNow);
-
   const lower = suggestedTimeText.toLowerCase();
 
-  // tomorrow
-  if (/\btomorrow\b/.test(lower)) {
-    targetLocal.setDate(targetLocal.getDate() + 1);
-  }
+  if (/\btomorrow\b/.test(lower)) targetLocal.setDate(targetLocal.getDate() + 1);
 
-  // in X minutes
   const inMin = lower.match(/\bin\s+(\d+)\s*minute(s)?\b/);
   if (inMin) {
     targetLocal.setMinutes(targetLocal.getMinutes() + parseInt(inMin[1], 10));
@@ -86,461 +76,265 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone, customerNu
     return { targetLocal, localNow, nowUtc };
   }
 
-  // at HH:MM (24h)
   const hm24 = lower.match(/\b(at\s*)?(\d{1,2}):(\d{2})\b/);
   if (hm24) {
-    const h = parseInt(hm24[2], 10);
-    const m = parseInt(hm24[3], 10);
-    targetLocal.setHours(h, m, 0, 0);
-    // if time already passed today, assume tomorrow
+    targetLocal.setHours(parseInt(hm24[2], 10), parseInt(hm24[3], 10), 0, 0);
     if (targetLocal.getTime() <= localNow.getTime()) targetLocal.setDate(targetLocal.getDate() + 1);
     return { targetLocal, localNow, nowUtc };
   }
 
-  // at H am/pm
   const ampm = lower.match(/\b(at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
   if (ampm) {
     let h = parseInt(ampm[2], 10);
     const m = ampm[3] ? parseInt(ampm[3], 10) : 0;
-    const mer = ampm[4];
-    if (mer === "pm" && h !== 12) h += 12;
-    if (mer === "am" && h === 12) h = 0;
+    if (ampm[4] === "pm" && h !== 12) h += 12;
+    if (ampm[4] === "am" && h === 12) h = 0;
     targetLocal.setHours(h, m, 0, 0);
     if (targetLocal.getTime() <= localNow.getTime()) targetLocal.setDate(targetLocal.getDate() + 1);
     return { targetLocal, localNow, nowUtc };
   }
 
-  // fallback: your old “X minute” pattern (without "in")
   const mins = lower.match(/(\d+)\s*minute(s)?\b/);
   if (mins) {
     targetLocal.setMinutes(targetLocal.getMinutes() + parseInt(mins[1], 10));
     targetLocal.setSeconds(0, 0);
     return { targetLocal, localNow, nowUtc };
   }
-
   return null;
 }
 
-/**
- * Extract a "suggested time" from transcript.
- * This is intentionally conservative; we can tighten once we see your real transcript patterns.
- */
 function extractSuggestedTimeFromTranscript(transcript = "") {
   const text = transcript.replace(/\s+/g, " ").trim();
   if (!text) return null;
-
-  // Try to find a segment near "call me", "callback", "reach me", "tomorrow", "in X minutes", "at 3pm"
   const patterns = [
     /\b(call me back|callback|call me|reach me)\b[^.?!]*?(\btomorrow\b[^.?!]*|\bin\s+\d+\s*minute[s]?\b[^.?!]*|\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)\b[^.?!]*|\b\d{1,2}:\d{2}\b[^.?!]*)/i,
     /(\btomorrow\b[^.?!]*|\bin\s+\d+\s*minute[s]?\b[^.?!]*|\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)\b[^.?!]*|\b\d{1,2}:\d{2}\b[^.?!]*)/i
   ];
-
   for (const p of patterns) {
     const m = text.match(p);
-    if (m) {
-      // if we used the first pattern, the time-ish chunk is capture group 2; otherwise group 1
-      return (m[2] || m[1] || "").trim();
-    }
+    if (m) return (m[2] || m[1] || "").trim();
   }
   return null;
 }
 
-function safeJsonParse(str, fallback) {
-  try {
-    return JSON.parse(str);
-  } catch {
-    return fallback;
-  }
+const scheduledByKey = new Map();
+function markScheduled(key) { if (key) scheduledByKey.set(key, Date.now()); }
+function wasScheduled(key) {
+  if (!key) return false;
+  const ts = scheduledByKey.get(key);
+  if (!ts) return false;
+  if (Date.now() - ts > 60 * 60 * 1000) { scheduledByKey.delete(key); return false; }
+  return true;
 }
 
-function getPhasesFromMessage(message) {
-  const raw =
-    message?.call?.assistantOverrides?.variableValues?.INTERVIEW_PHASES_JSON ||
-    DEFAULT_VARIABLE_VALUES.INTERVIEW_PHASES_JSON ||
-    "[]";
-  return safeJsonParse(raw, []);
+const timersScheduledForCallId = new Set();
+
+// =============================================================================
+// Supabase data layer
+// =============================================================================
+
+async function upsertParticipant({ phoneNumber, name }) {
+  const { data, error } = await supabase
+    .from("participants")
+    .upsert({ phone_number: phoneNumber, name: name || null }, { onConflict: "phone_number" })
+    .select()
+    .single();
+  if (error) throw new Error(`upsertParticipant failed: ${error.message}`);
+  return data;
 }
 
+async function createSessionRow({ participantId, sessionNumber, priorSessionsContext }) {
+  const { data, error } = await supabase
+    .from("sessions")
+    .insert({
+      participant_id: participantId,
+      session_number: sessionNumber,
+      status: "scheduled",
+      prior_sessions_context: priorSessionsContext || null
+    })
+    .select()
+    .single();
+  if (error) throw new Error(`createSessionRow failed: ${error.message}`);
+  return data;
+}
 
-async function scheduleCallback({ assistantId, customerNumber, earliestAtIso }) {
-  const response = await fetch("https://api.vapi.ai/call", {
+async function setSessionCallId(sessionId, callId) {
+  const { error } = await supabase
+    .from("sessions")
+    .update({ call_id: callId })
+    .eq("id", sessionId);
+  if (error) console.error("setSessionCallId failed:", error.message);
+}
+
+async function updateSessionByCallId(callId, updates) {
+  if (!callId) return;
+  const { error } = await supabase
+    .from("sessions")
+    .update(updates)
+    .eq("call_id", callId);
+  if (error) console.error("updateSessionByCallId failed:", error.message);
+}
+
+async function recordScheduledCall({ participantId, sessionNumber, scheduledAt, vapiCallId }) {
+  const { error } = await supabase
+    .from("scheduled_calls")
+    .insert({
+      participant_id: participantId,
+      session_number: sessionNumber,
+      scheduled_at: scheduledAt,
+      vapi_call_id: vapiCallId,
+      status: "sent"
+    });
+  if (error) console.error("recordScheduledCall failed:", error.message);
+}
+
+// =============================================================================
+// Vapi API wrappers
+// =============================================================================
+
+async function vapiPost(path, body) {
+  const resp = await fetch(`https://api.vapi.ai${path}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${VAPI_API_KEY}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      assistantId: assistantId || ASSISTANT_ID,
-      phoneNumberId: PHONE_NUMBER_ID,
-      customer: { number: customerNumber },
-      schedulePlan: { earliestAt: earliestAtIso },
-      assistantOverrides: {
-        variableValues: {
-          ...DEFAULT_VARIABLE_VALUES,
-          IS_CALLBACK: "true"
-        }
-      }
-    })
+    body: JSON.stringify(body)
   });
-
-  const result = await response.json();
-  if (!response.ok) {
-    throw new Error(`Vapi call schedule failed: ${response.status} ${JSON.stringify(result)}`);
-  }
+  const result = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(`Vapi POST ${path} ${resp.status}: ${JSON.stringify(result)}`);
   return result;
 }
 
-async function startImmediateCall({ assistantId, customerNumber, variableValues }) {
-  const response = await fetch("https://api.vapi.ai/call", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${VAPI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      assistantId,
-      phoneNumberId: PHONE_NUMBER_ID,
-      customer: { number: customerNumber },
-      assistantOverrides: { variableValues }
-    })
+async function startVapiCall({ assistantId, customerNumber, variableValues }) {
+  return vapiPost("/call", {
+    assistantId,
+    phoneNumberId: PHONE_NUMBER_ID,
+    customer: { number: customerNumber },
+    assistantOverrides: { variableValues }
   });
-
-  const result = await response.json();
-  if (!response.ok) {
-    throw new Error(`Vapi start call failed: ${response.status} ${JSON.stringify(result)}`);
-  }
-  return result;
 }
 
-async function qstashSchedule({ notBeforeSeconds, body }) {
-  const resp = await fetch(
-    "https://qstash.upstash.io/v2/publish/https://vapi-interview-webhook.onrender.com/timing/transition",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.QSTASH_TOKEN}`,
-        "Content-Type": "application/json",
-        "Upstash-Not-Before": String(notBeforeSeconds)
-      },
-      body: JSON.stringify(body)
-    }
-  );
-
-  const text = await resp.text();
-  console.log("QStash schedule resp", resp.status, text);
+async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso, variableValues }) {
+  return vapiPost("/call", {
+    assistantId,
+    phoneNumberId: PHONE_NUMBER_ID,
+    customer: { number: customerNumber },
+    schedulePlan: { earliestAt: earliestAtIso },
+    assistantOverrides: { variableValues: { ...variableValues, IS_CALLBACK: "true" } }
+  });
 }
-
 
 async function injectSystemMessageViaControlUrl({ controlUrl, content }) {
   const resp = await fetch(controlUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "add-message",
-      message: { role: "system", content }
-    })
+    body: JSON.stringify({ type: "add-message", message: { role: "system", content } })
   });
-
   const text = await resp.text();
   console.log("controlUrl add-message resp", resp.status, text);
   return { status: resp.status, body: text };
 }
 
-
-
-
-
-app.post("/vapi", async (req, res) => {
+async function endVapiCall(callId) {
   try {
-    const message = req.body?.message; // <-- use ONE variable name everywhere
-
-// ✅ status-update handler: schedule phase boundary escalation messages
-if (message?.type === "status-update") {
-  const status = message?.status;
-  const callId = message?.call?.id;
-  const controlUrl = message?.call?.monitor?.controlUrl;
-  
-  console.log("monitor urls:", {
-    callId,
-    listenUrl: message?.call?.monitor?.listenUrl,
-    controlUrl: message?.call?.monitor?.controlUrl
-  });
-  
-  console.log("status-update received:", { callId, status });
-  if (status === "ended" && callId) qstashScheduledCallIds.delete(callId);
-  
-  // schedule once when call begins
-  if (status === "in-progress" && callId && !qstashScheduledCallIds.has(callId)) {
-    qstashScheduledCallIds.add(callId);
-  
-    const phases = getPhasesFromMessage(message);
-  
-    const phase1 = phases?.[0]?.name || "the first topic";
-    const lockMsg =
-      `Silent internal instruction (do NOT read aloud): ` +
-      `Timing rule: you are currently on "${phase1}". ` +
-      `Do NOT move to the next part until you receive: "Timing rule: transition now". ` +
-      `Until then, keep asking follow-up questions only about "${phase1}".`;
-  
-      try {
-        if (controlUrl) {
-          await injectSystemMessageViaControlUrl({ controlUrl, content: lockMsg });
-          console.log("Sent phase lock message via controlUrl", { callId });
-        } else {
-          console.log("Missing controlUrl; cannot inject lock message", { callId });
-        }
-      } catch (e) {
-        console.log("Failed sending phase lock message via controlUrl:", { callId, error: String(e) });
-      }
-
-    // ✅ Anchor to call start (preferred). Fall back to now if missing.
-     const baseMs = Date.now();
-    
-    let cumulativeSeconds = 0;
-
-    for (let i = 0; i < phases.length; i++) {
-      const phase = phases[i];
-      const transitionAtSeconds = Number(phase?.transitionAtSeconds || 0);
-      if (!transitionAtSeconds) continue;
-
-      cumulativeSeconds += transitionAtSeconds;
-      const isLastPhase = i === phases.length - 1;
-      const delayMs = cumulativeSeconds * 1000;
-
-      let content;
-      if (isLastPhase) {
-        content =
-          `Silent internal instruction (do NOT read aloud): Timing rule: end interview now. ` +
-          `Do this now:\n` +
-          `1) Give a brief 1–2 sentence summary of what you heard.\n` +
-          `2) Thank the participant.\n` +
-          `3) Ask one final: "Is there anything else you'd like to add?"\n` +
-          `4) If they add something, acknowledge briefly.\n` +
-          `5) Then say goodbye and end the call.`;
-      } else {
-        const nextPhase = phases[i + 1];
-        const nextTopic = nextPhase?.name || "the next topic";
-       content =
-            `Silent internal instruction (do NOT read aloud): Timing rule: transition now. ` +
-            `Now do this:\n` +
-            `1) Say a natural transition sentence to the user (do not say 'Timing rule').\n` +
-            `2) Then begin the next topic: "${nextTopic}" with ONE clear question.`;
-       }
-
-      const notBeforeSeconds = Math.floor((baseMs + delayMs) / 1000);
-     
-      console.log("QStash scheduling transition:", {
-        callId,
-        phaseIndex: i + 1,
-        phaseName: phase?.name,
-        transitionAtSeconds,
-        cumulativeSeconds,
-        isLastPhase
-      });
-
-      await qstashSchedule({
-        notBeforeSeconds,
-        body: { callId, controlUrl, content }
-      });
-    }
-
-    return res.json({ ok: true });
+    const resp = await fetch(`https://api.vapi.ai/call/${callId}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${VAPI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ status: "ended" })
+    });
+    const text = await resp.text();
+    console.log("endVapiCall resp", resp.status, text);
+    return { status: resp.status, body: text };
+  } catch (e) {
+    console.error("endVapiCall threw:", e);
+    return { status: 0, body: String(e) };
   }
-
-  return res.json({ ok: true });
 }
 
-    
-    console.log("Webhook summary:", {
-      type: message?.type,
-      endedReason: message?.endedReason,
-      customer: message?.customer?.number || message?.call?.customer?.number,
-      transcript:
-        message?.artifact?.transcript ||
-        message?.call?.artifact?.transcript ||
-        message?.transcript ||
-        message?.call?.transcript
-    });
+// =============================================================================
+// QStash scheduling
+// =============================================================================
 
-    // Keep old tool-calls path (optional)
-    if (message?.type === "tool-calls") {
-      const toolCall = message.toolCallList?.[0];
-      const fn = toolCall?.function;
-
-      if (fn?.name === "schedule_callback") {
-        const { customerNumber, suggestedTime } = fn.arguments || {};
-        const timezone = inferTimezone(customerNumber);
-        const parsed = parseSuggestedTimeToLocalDate({
-          suggestedTimeText: suggestedTime,
-          timezone,
-          customerNumber
-        });
-
-        if (!parsed) {
-          return res.json({
-            results: [{ toolCallId: toolCall.id, result: "Could not parse suggested time" }]
-          });
-        }
-
-        const { targetLocal, localNow, nowUtc } = parsed;
-        const offsetMs = localNow.getTime() - nowUtc.getTime();
-        const utcTarget = new Date(targetLocal.getTime() - offsetMs);
-
-        const assistantIdForCallback =
-          message?.call?.assistantId ||
-          message?.assistant?.id ||
-          ASSISTANT_ID;
-        
-        await scheduleCallback({
-          assistantId: assistantIdForCallback,
-          customerNumber,
-          earliestAtIso: utcTarget.toISOString()
-        });
-        const callId = message?.call?.id;
-        
-        if (!callId) {
-          console.log("tool-calls schedule_callback: missing message.call.id; dedupe may not work");
-        }
-       
-        const dedupeKey = callId || `${customerNumber}:${suggestedTime}`;
-        markScheduled(dedupeKey);
-
-        return res.json({
-          results: [{
-            toolCallId: toolCall.toolCallId || toolCall.id,
-            result: `Callback scheduled. Confirm to the user: "Got it — I’ll call you back in ${suggestedTime}."`
-          }]
-        });
-      }
-
-      return res.json({ results: [] });
-    }
-
-// ✅ end-of-call-report path (fallback only)
-if (message?.type === "end-of-call-report") {
-  const call = message.call;
-  
-  const callId = message?.call?.id;
-
-  const customerNumber =
-    call?.customer?.number ||
-    message?.customer?.number;
-  
-  const transcript =
-    message?.artifact?.transcript ||
-    call?.artifact?.transcript ||
-    message?.transcript ||
-    call?.transcript ||
-    "";
-
-  if (!customerNumber) {
-    console.log("end-of-call-report received but no customer number found");
-    return res.json({});
-  }
-
-  const timezone = inferTimezone(customerNumber);
-  const suggestedTimeText = extractSuggestedTimeFromTranscript(transcript);
-
-  if (!suggestedTimeText) {
-    console.log("No suggested time found in transcript. customer:", customerNumber);
-    return res.json({});
-  }
-  
-  // ✅ dedupe keys (ONLY after we have customerNumber + suggestedTimeText)
-  const callIdKey = message?.call?.id || message?.callId;
-  const timeKey = `${customerNumber}:${suggestedTimeText}`;
-
-  if (wasScheduled(callIdKey) || wasScheduled(timeKey)) {
-    console.log("Skipping end-of-call scheduling; already scheduled via tool-calls", { callIdKey, timeKey });
-    return res.json({});
-  }
-
-  const parsed = parseSuggestedTimeToLocalDate({
-    suggestedTimeText,
-    timezone,
-    customerNumber
+async function qstashScheduleAt({ url, notBeforeSeconds, body }) {
+  const resp = await fetch(`https://qstash.upstash.io/v2/publish/${url}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${QSTASH_TOKEN}`,
+      "Content-Type": "application/json",
+      "Upstash-Not-Before": String(notBeforeSeconds)
+    },
+    body: JSON.stringify(body)
   });
-
-  if (!parsed) {
-    console.log("Found suggested time text but could not parse:", suggestedTimeText);
-    return res.json({});
-  }
-
-  const { targetLocal, localNow, nowUtc } = parsed;
-  const offsetMs = localNow.getTime() - nowUtc.getTime();
-  const utcTarget = new Date(targetLocal.getTime() - offsetMs);
-
- const assistantIdForCallback =
-  message?.call?.assistantId ||
-  message?.assistant?.id ||
-  ASSISTANT_ID;
-
-  const scheduled = await scheduleCallback({
-    assistantId: assistantIdForCallback,
-    customerNumber,
-    earliestAtIso: utcTarget.toISOString()
-  });
-
-
-// ✅ mark scheduled so repeated reports don’t double-schedule
-  markScheduled(callIdKey || timeKey);
-
-  console.log("Callback scheduled from end-of-call-report:", {
-    customerNumber,
-    timezone,
-    suggestedTimeText,
-    utcTarget: utcTarget.toISOString(),
-    scheduledCallId: scheduled?.id
-  });
-
-  return res.json({});
+  const text = await resp.text();
+  console.log("QStash schedule resp", resp.status, url, text);
+  return { status: resp.status, body: text };
 }
 
-    return res.json({});
-  } catch (err) {
-    console.error("Webhook error:", err);
-    return res.status(200).json({});
-  }
-});
+function buildVariableValues({ activeSession, priorSessionsContext, isCallback, participantName }) {
+  return {
+    ACTIVE_SESSION: String(activeSession),
+    PRIOR_SESSIONS_CONTEXT: priorSessionsContext || "",
+    INTERVIEW_MAX_MINUTES: String(INTERVIEW_MAX_MINUTES),
+    IS_CALLBACK: isCallback ? "true" : "false",
+    SCREENING_QUESTIONS_JSON,
+    PARTICIPANT_NAME: participantName || ""
+  };
+}
 
-    app.post("/timing/transition", async (req, res) => {
-      try {
-        const { callId, controlUrl, content } = req.body || {};
-        if (!controlUrl || !content) {
-          return res.status(400).json({ error: "Missing controlUrl/content" });
-        }
-    
-        await injectSystemMessageViaControlUrl({ controlUrl, content });
-        return res.json({ ok: true });
-      } catch (e) {
-        console.error("timing/transition error", e);
-        return res.status(500).json({ ok: false });
-      }
-    });
+// =============================================================================
+// Routes
+// =============================================================================
 
-  app.post("/start-call", async (req, res) => {
+/**
+ * POST /start-call
+ * Body: { customerNumber (req), name?, sessionNumber?=1, priorSessionsContext?, assistantId? }
+ */
+app.post("/start-call", async (req, res) => {
   try {
-    const { customerNumber, assistantId } = req.body || {};
-
-    if (!customerNumber) {
-      return res.status(400).json({ error: "Missing customerNumber" });
-    }
-    if (!assistantId) {
-      return res.status(400).json({ error: "Missing assistantId" });
-    }
-
-    const started = await startImmediateCall({
-      assistantId,
+    const {
       customerNumber,
-      variableValues: {
-        ...DEFAULT_VARIABLE_VALUES,
-        IS_CALLBACK: "false"
-      }
+      name,
+      sessionNumber = 1,
+      priorSessionsContext = "",
+      assistantId
+    } = req.body || {};
+
+    if (!customerNumber) return res.status(400).json({ error: "Missing customerNumber" });
+    if (![1, 2, 3].includes(sessionNumber)) {
+      return res.status(400).json({ error: "sessionNumber must be 1, 2, or 3" });
+    }
+
+    const participant = await upsertParticipant({ phoneNumber: customerNumber, name });
+    const session = await createSessionRow({
+      participantId: participant.id,
+      sessionNumber,
+      priorSessionsContext
     });
+
+    const variableValues = buildVariableValues({
+      activeSession: sessionNumber,
+      priorSessionsContext,
+      isCallback: false,
+      participantName: participant.name
+    });
+
+    const started = await startVapiCall({
+      assistantId: assistantId || ASSISTANT_ID,
+      customerNumber,
+      variableValues
+    });
+
+    await setSessionCallId(session.id, started?.id);
 
     return res.json({
       ok: true,
       callId: started?.id,
+      sessionId: session.id,
+      participantId: participant.id,
       status: started?.status
     });
   } catch (err) {
@@ -549,4 +343,230 @@ if (message?.type === "end-of-call-report") {
   }
 });
 
-app.listen(3000, () => console.log("Server running"));
+/**
+ * POST /vapi
+ * Vapi server webhook. Handles status-update, tool-calls, end-of-call-report.
+ */
+app.post("/vapi", async (req, res) => {
+  try {
+    const message = req.body?.message;
+    const type = message?.type;
+
+    if (type === "status-update") {
+      const status = message?.status;
+      const callId = message?.call?.id;
+      const controlUrl = message?.call?.monitor?.controlUrl;
+      console.log("status-update:", { callId, status });
+
+      if (status === "ended" && callId) {
+        timersScheduledForCallId.delete(callId);
+        await updateSessionByCallId(callId, {
+          status: "completed",
+          completed_at: new Date().toISOString()
+        });
+      }
+
+      if (status === "in-progress" && callId && !timersScheduledForCallId.has(callId)) {
+        timersScheduledForCallId.add(callId);
+        await updateSessionByCallId(callId, {
+          status: "in_progress",
+          started_at: new Date().toISOString()
+        });
+
+        const startMs = Date.now();
+        const wrapupAt = Math.floor((startMs + (INTERVIEW_MAX_MINUTES - WRAPUP_OFFSET_MINUTES) * 60 * 1000) / 1000);
+        const hardCapAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000) / 1000);
+
+        const wrapupContent =
+          `Wrap-up signal: We are approaching the time cap for this conversation. ` +
+          `Per <time_management>, stop opening new milestones. Wind down the current ` +
+          `milestone with at most one closing follow-up, then deliver the open-ended ` +
+          `close question for your active session as defined in <closing_protocol>. ` +
+          `Acknowledge the participant's response in three words or fewer. Then ` +
+          `deliver the closing line for your active session and call endCall.`;
+
+        try {
+          if (controlUrl && RENDER_BASE_URL && QSTASH_TOKEN) {
+            await qstashScheduleAt({
+              url: `${RENDER_BASE_URL}/timing/wrap-up`,
+              notBeforeSeconds: wrapupAt,
+              body: { callId, controlUrl, content: wrapupContent }
+            });
+            await qstashScheduleAt({
+              url: `${RENDER_BASE_URL}/timing/hard-cap`,
+              notBeforeSeconds: hardCapAt,
+              body: { callId }
+            });
+            console.log("Scheduled wrap-up + hard-cap timers", { callId, wrapupAt, hardCapAt });
+          } else {
+            console.warn("Skipping timer schedule — missing controlUrl, RENDER_BASE_URL, or QSTASH_TOKEN");
+          }
+        } catch (e) {
+          console.error("Timer scheduling failed:", e);
+        }
+      }
+
+      return res.json({ ok: true });
+    }
+
+    if (type === "tool-calls") {
+      const toolCall = message.toolCallList?.[0];
+      const fn = toolCall?.function;
+      if (fn?.name === "schedule_callback") {
+        const { customerNumber, suggestedTime } = fn.arguments || {};
+        const timezone = inferTimezone(customerNumber);
+        const parsed = parseSuggestedTimeToLocalDate({ suggestedTimeText: suggestedTime, timezone });
+        if (!parsed) {
+          return res.json({
+            results: [{ toolCallId: toolCall.id, result: "Could not parse suggested time" }]
+          });
+        }
+        const { targetLocal, localNow, nowUtc } = parsed;
+        const offsetMs = localNow.getTime() - nowUtc.getTime();
+        const utcTarget = new Date(targetLocal.getTime() - offsetMs);
+
+        const assistantIdForCallback =
+          message?.call?.assistantId || message?.assistant?.id || ASSISTANT_ID;
+        const callId = message?.call?.id;
+
+        const scheduled = await scheduleVapiCallback({
+          assistantId: assistantIdForCallback,
+          customerNumber,
+          earliestAtIso: utcTarget.toISOString(),
+          variableValues: buildVariableValues({
+            activeSession: 1,
+            priorSessionsContext: "",
+            isCallback: true,
+            participantName: ""
+          })
+        });
+
+        markScheduled(callId || `${customerNumber}:${suggestedTime}`);
+
+        try {
+          const { data: p } = await supabase
+            .from("participants")
+            .select("id")
+            .eq("phone_number", customerNumber)
+            .maybeSingle();
+          if (p?.id) {
+            await recordScheduledCall({
+              participantId: p.id,
+              sessionNumber: 1,
+              scheduledAt: utcTarget.toISOString(),
+              vapiCallId: scheduled?.id
+            });
+          }
+        } catch (e) {
+          console.error("Persist scheduled_calls failed:", e);
+        }
+
+        return res.json({
+          results: [{
+            toolCallId: toolCall.toolCallId || toolCall.id,
+            result: `Callback scheduled. Confirm to the user: "Got it — I'll call you back ${suggestedTime}."`
+          }]
+        });
+      }
+      return res.json({ results: [] });
+    }
+
+    if (type === "end-of-call-report") {
+      const call = message.call;
+      const callId = call?.id;
+      const customerNumber = call?.customer?.number || message?.customer?.number;
+      const transcript =
+        message?.artifact?.transcript ||
+        call?.artifact?.transcript ||
+        message?.transcript ||
+        call?.transcript ||
+        "";
+      const transcriptStructured =
+        message?.artifact?.messages || call?.artifact?.messages || null;
+
+      if (callId) {
+        await updateSessionByCallId(callId, {
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          transcript: transcriptStructured || (transcript ? { plain: transcript } : null)
+        });
+      }
+
+      if (customerNumber) {
+        const suggestedTimeText = extractSuggestedTimeFromTranscript(transcript);
+        const callIdKey = callId;
+        const timeKey = `${customerNumber}:${suggestedTimeText}`;
+        if (suggestedTimeText && !wasScheduled(callIdKey) && !wasScheduled(timeKey)) {
+          const timezone = inferTimezone(customerNumber);
+          const parsed = parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone });
+          if (parsed) {
+            const { targetLocal, localNow, nowUtc } = parsed;
+            const offsetMs = localNow.getTime() - nowUtc.getTime();
+            const utcTarget = new Date(targetLocal.getTime() - offsetMs);
+            const assistantIdForCallback =
+              call?.assistantId || message?.assistant?.id || ASSISTANT_ID;
+            await scheduleVapiCallback({
+              assistantId: assistantIdForCallback,
+              customerNumber,
+              earliestAtIso: utcTarget.toISOString(),
+              variableValues: buildVariableValues({
+                activeSession: 1,
+                priorSessionsContext: "",
+                isCallback: true,
+                participantName: ""
+              })
+            });
+            markScheduled(callIdKey || timeKey);
+            console.log("Fallback callback scheduled from end-of-call:", {
+              customerNumber, suggestedTimeText, utcTarget: utcTarget.toISOString()
+            });
+          }
+        }
+      }
+
+      return res.json({});
+    }
+
+    return res.json({});
+  } catch (err) {
+    console.error("Webhook error:", err);
+    return res.status(200).json({});
+  }
+});
+
+/**
+ * POST /timing/wrap-up
+ * QStash trigger 2 minutes before hard cap. Injects the wrap-up system message.
+ */
+app.post("/timing/wrap-up", async (req, res) => {
+  try {
+    const { callId, controlUrl, content } = req.body || {};
+    if (!controlUrl || !content) return res.status(400).json({ error: "Missing controlUrl/content" });
+    await injectSystemMessageViaControlUrl({ controlUrl, content });
+    console.log("Injected wrap-up signal", { callId });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("/timing/wrap-up error", e);
+    return res.status(500).json({ ok: false });
+  }
+});
+
+/**
+ * POST /timing/hard-cap
+ * QStash trigger at INTERVIEW_MAX_MINUTES. Forcibly ends the Vapi call.
+ */
+app.post("/timing/hard-cap", async (req, res) => {
+  try {
+    const { callId } = req.body || {};
+    if (!callId) return res.status(400).json({ error: "Missing callId" });
+    await endVapiCall(callId);
+    console.log("Hard cap fired", { callId });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("/timing/hard-cap error", e);
+    return res.status(500).json({ ok: false });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));

@@ -213,14 +213,14 @@ Don't build these in Phase 1.
 - Retrieved into `sessions.prior_sessions_context` for the next session
 - The summarisation prompt itself is yet to be designed — it needs to produce summaries in the same prose style as the existing manual summaries (see `session_1_and_2_summaries_for_session_3.txt` for reference)
 
-## Deferred Questions Awaiting User Answers
+## Resolved Decisions
 
-These were asked at the end of the previous Claude session and not answered. Get them resolved before building:
+All previously deferred questions have been answered by the user:
 
-- **Question A** — Single Render service or split orchestrator + summariser? Recommendation: single service for MVP. User to confirm.
-- **Question B** — Participant names? Eric should be able to address by name if available. User to confirm whether `PARTICIPANT_NAME` becomes a runtime variable.
-- **Question C** — Clean rewrite of server.js, or minimal-change? Recommendation: clean rewrite for production code. User to confirm.
-- **Database choice** — Supabase recommended. User has not confirmed signup or alternate choice (Neon also acceptable).
+- **Single Render service** for MVP. Don't split into orchestrator + summariser.
+- **Participant names will be used.** `PARTICIPANT_NAME` is a runtime variable. Eric can address the participant by name when available (e.g., "Good to speak with you, Janet"). The `participants` table in Supabase has a `name` column for this.
+- **Clean rewrite of server.js.** Don't preserve the existing structure. Build a new server.js from scratch with only what the new architecture needs.
+- **Database: Supabase free tier.** Use the schema specified in this document. The user will create the Supabase project; first task is to provide them with environment variable setup instructions and the schema DDL.
 
 ## Known Vapi Quirks and Constraints
 
@@ -274,19 +274,17 @@ For production code, real call testing is the next step. SIM testing is at dimin
 
 ## How to Proceed
 
-When user gives permission to start Phase 1:
+All architectural decisions are made. When user gives permission to start Phase 1:
 
-1. Confirm the four deferred questions (A, B, C, database)
-2. Get the latest `Vapi_system_prompt_milestone.txt` (152KB version with all strengthening) from the user — it's not in this repo by default, ask them to paste or upload it
-3. Get the existing `server_28Apr2026.js` from the user (uploaded in previous session)
-4. Adapt the prompt for Session 1 production mode (preserves all 14 phases for future Phase 2 work)
-5. Build the new server.js (clean rewrite assuming user confirms)
-6. Set up Supabase schema
-7. Provide deployment instructions for Render and Vapi
-8. Provide Postman/curl examples for testing
+1. Confirm the user has created a Supabase project and gathered the connection credentials (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`)
+2. Apply the database schema (DDL provided in this document) to the Supabase project
+3. Adapt `Vapi_system_prompt_milestone.txt` for Session 1 production mode — preserves all 14 phases for future Phase 2 work, but Session 1 is the only one called by the active_session value in MVP. Add the screening flow (kept as-is from the existing orchestrator), the 43-minute wrap-up handling instruction, and the new runtime variables including `PARTICIPANT_NAME`
+4. Clean-rewrite `server.js` from scratch (do not preserve the existing structure). Use Express, integrate with Supabase, integrate with QStash for the 43/45-minute timers, integrate with Vapi APIs for call initiation, message injection, and call termination
+5. Provide deployment instructions for Render (environment variables, build/start commands) and Vapi (assistant configuration, runtime variable mapping)
+6. Provide Postman/curl examples for testing
 
 Test in stages:
 - First, an outbound call to user's own phone using the new prompt to verify Session 1 runs end-to-end
 - Then, callback scheduling test
-- Then, the 43-minute wrap-up trigger test (use a shorter time for testing)
+- Then, the 43-minute wrap-up trigger test (use a shorter time for testing — e.g., trigger at 5 minutes for quick validation)
 - Then, full call with the 45-minute fail-safe
