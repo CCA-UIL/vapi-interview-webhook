@@ -144,14 +144,23 @@ async function upsertParticipant({ phoneNumber, name }) {
 }
 
 async function createSessionRow({ participantId, sessionNumber, priorSessionsContext }) {
+  // Upsert resets the row on each /start-call. The UNIQUE(participant_id,
+  // session_number) constraint means production has at most one row per
+  // session, but during testing we re-call the same phone repeatedly and
+  // need to start fresh each time.
   const { data, error } = await supabase
     .from("sessions")
-    .insert({
+    .upsert({
       participant_id: participantId,
       session_number: sessionNumber,
       status: "scheduled",
-      prior_sessions_context: priorSessionsContext || null
-    })
+      prior_sessions_context: priorSessionsContext || null,
+      call_id: null,
+      started_at: null,
+      completed_at: null,
+      transcript: null,
+      summary: null
+    }, { onConflict: "participant_id,session_number" })
     .select()
     .single();
   if (error) throw new Error(`createSessionRow failed: ${error.message}`);

@@ -49,9 +49,30 @@ The runtime variables the prompt expects (server passes these in `assistantOverr
 
 You don't need to declare these in the Vapi UI. Vapi accepts arbitrary `variableValues` at call-start.
 
-## 3. Curl examples (replace placeholders with real values)
+## 3. Calling the server
 
-### Start a call
+Two helper scripts in `scripts/` make this one-liners. PowerShell versions for Windows; bash versions for macOS/Linux/Git Bash.
+
+### Start a call (PowerShell — Windows default)
+
+```powershell
+.\scripts\start-call.ps1 +15551234567 Janet
+```
+
+Override server URL for local testing:
+
+```powershell
+$env:SERVER_URL = "http://localhost:3000"
+.\scripts\start-call.ps1 +15551234567 Janet
+```
+
+### Start a call (bash — macOS / Git Bash / WSL)
+
+```bash
+bash scripts/start-call.sh +15551234567 Janet
+```
+
+### Raw curl equivalent (any shell)
 
 ```bash
 curl -X POST https://vapi-interview-webhook.onrender.com/start-call \
@@ -76,24 +97,22 @@ Response:
 
 ### Inspect Supabase state
 
-```bash
-# List participants
-curl -s "$SUPABASE_URL/rest/v1/participants?select=*" \
-  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | jq
+PowerShell:
 
-# List sessions ordered by recency
-curl -s "$SUPABASE_URL/rest/v1/sessions?select=*&order=created_at.desc" \
-  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | jq
-
-# List scheduled callbacks
-curl -s "$SUPABASE_URL/rest/v1/scheduled_calls?select=*&order=scheduled_at.asc" \
-  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | jq
+```powershell
+.\scripts\inspect-db.ps1                  # all three tables
+.\scripts\inspect-db.ps1 sessions         # just sessions
+.\scripts\inspect-db.ps1 scheduled_calls  # just callbacks
 ```
 
-(Or open Supabase → Table Editor → click each table.)
+bash:
+
+```bash
+bash scripts/inspect-db.sh
+bash scripts/inspect-db.sh sessions
+```
+
+Or open Supabase → Table Editor → click each table for visual rows, no terminal.
 
 ## 4. Test plan — staged
 
