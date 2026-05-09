@@ -3,7 +3,10 @@ import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
 const app = express();
-app.use(express.json());
+// Vapi webhook bodies include the assistant config (system prompt + tools)
+// plus the running transcript, so payloads can easily exceed Express's
+// default 100kb limit. Bumping to 10mb to comfortably absorb that.
+app.use(express.json({ limit: "10mb" }));
 
 // =============================================================================
 // Environment
