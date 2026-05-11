@@ -271,16 +271,20 @@ const PROMPT_PATH = path.join(
 
 function loadPromptForCall({ isCallback }) {
   let prompt = fs.readFileSync(PROMPT_PATH, "utf8");
+  // The regex must anchor to top-level tags (column 0) — both flow blocks
+  // contain inline prose references to the *other* flow's tag name (e.g.,
+  // session_1_initial_call_flow's description mentions "use
+  // <session_1_callback_flow>"), and an unanchored regex would lazily
+  // match from that inline mention through the end of the actual block,
+  // wiping most of the wrong block.
   if (isCallback) {
-    // Callback call — strip the initial flow body, keep callback flow
     prompt = prompt.replace(
-      /<session_1_initial_call_flow>[\s\S]*?<\/session_1_initial_call_flow>/,
+      /^<session_1_initial_call_flow>[\s\S]*?^<\/session_1_initial_call_flow>$/m,
       "<session_1_initial_call_flow>(omitted: this call is a callback, so the initial flow does not apply)</session_1_initial_call_flow>"
     );
   } else {
-    // Initial call — strip the callback flow body
     prompt = prompt.replace(
-      /<session_1_callback_flow>[\s\S]*?<\/session_1_callback_flow>/,
+      /^<session_1_callback_flow>[\s\S]*?^<\/session_1_callback_flow>$/m,
       "<session_1_callback_flow>(omitted: this call is not a callback)</session_1_callback_flow>"
     );
   }
