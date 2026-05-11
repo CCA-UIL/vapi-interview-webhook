@@ -530,13 +530,18 @@ app.post("/vapi", async (req, res) => {
         const wrapupAt = Math.floor((startMs + (INTERVIEW_MAX_MINUTES - WRAPUP_OFFSET_MINUTES) * 60 * 1000) / 1000);
         const hardCapAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000) / 1000);
 
+        // Wrap-up directive must be highly directive — verbose / multi-step
+        // instructions get ignored mid-interview. Inline the exact words to
+        // speak so the model has no interpretation to do.
         const wrapupContent =
-          `Wrap-up signal: We are approaching the time cap for this conversation. ` +
-          `Per <time_management>, stop opening new milestones. Wind down the current ` +
-          `milestone with at most one closing follow-up, then deliver the open-ended ` +
-          `close question for your active session as defined in <closing_protocol>. ` +
-          `Acknowledge the participant's response in three words or fewer. Then ` +
-          `deliver the closing line for your active session and call endCall.`;
+          `WRAP-UP SIGNAL — TIME IS UP. End the call now. Steps in order:\n` +
+          `1. Stop asking interview questions immediately. Do not ask another follow-up.\n` +
+          `2. Speak this exact sentence to the participant verbatim:\n` +
+          `   "Thank you so much for everything you've shared today. ` +
+          `When we speak next time, I'd like to hear about your experience ` +
+          `with different cooking methods and your pressure cooker. Take care until then."\n` +
+          `3. Invoke endCall.\n` +
+          `Do not extend the conversation. Do not ask another question. Do not paraphrase the closing sentence — speak it verbatim.`;
 
         try {
           if (controlUrl && RENDER_BASE_URL && QSTASH_TOKEN) {
