@@ -557,6 +557,7 @@ app.post("/vapi", async (req, res) => {
 
         // TODO: branch on ACTIVE_SESSION when Sessions 2 and 3 are wired.
         const closingSentence =
+          `Well, that wraps up today's interview session. ` +
           `Thank you so much for everything you've shared today. ` +
           `When we speak next time, I'd like to hear about your experience ` +
           `with different cooking methods and your pressure cooker. ` +
