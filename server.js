@@ -63,6 +63,17 @@ function inferTimezone(number = "") {
   return "UTC";
 }
 
+const WORD_NUMBERS = {
+  one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, fifteen: 15, twenty: 20, thirty: 30,
+  forty: 40, fifty: 50, sixty: 60, ninety: 90, "a": 1, "an": 1
+};
+
+function wordToNumber(word) {
+  return WORD_NUMBERS[word.toLowerCase()] ?? null;
+}
+
 function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
   if (!suggestedTimeText) return null;
   const nowUtc = new Date();
@@ -72,9 +83,26 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
 
   if (/\btomorrow\b/.test(lower)) targetLocal.setDate(targetLocal.getDate() + 1);
 
-  const inMin = lower.match(/\bin\s+(\d+)\s*minute(s)?\b/);
-  if (inMin) {
-    targetLocal.setMinutes(targetLocal.getMinutes() + parseInt(inMin[1], 10));
+  // "in X minutes" — accept digits OR word-form numbers ("one", "two", ...)
+  const inMinDigit = lower.match(/\bin\s+(\d+)\s*minute(s)?\b/);
+  const inMinWord  = lower.match(/\bin\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|sixty|ninety)\s*minute(s)?\b/);
+  const inMinValue = inMinDigit
+    ? parseInt(inMinDigit[1], 10)
+    : (inMinWord ? wordToNumber(inMinWord[1]) : null);
+  if (inMinValue) {
+    targetLocal.setMinutes(targetLocal.getMinutes() + inMinValue);
+    targetLocal.setSeconds(0, 0);
+    return { targetLocal, localNow, nowUtc };
+  }
+
+  // "in X hours" — same word/digit handling
+  const inHrDigit = lower.match(/\bin\s+(\d+)\s*hour(s)?\b/);
+  const inHrWord  = lower.match(/\bin\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve)\s*hour(s)?\b/);
+  const inHrValue = inHrDigit
+    ? parseInt(inHrDigit[1], 10)
+    : (inHrWord ? wordToNumber(inHrWord[1]) : null);
+  if (inHrValue) {
+    targetLocal.setHours(targetLocal.getHours() + inHrValue);
     targetLocal.setSeconds(0, 0);
     return { targetLocal, localNow, nowUtc };
   }
@@ -248,15 +276,20 @@ async function injectSystemMessageViaControlUrl({ controlUrl, content }) {
   return { status: resp.status, body: text };
 }
 
-async function endVapiCall(callId) {
+async function endVapiCall({ callId, controlUrl }) {
+  // Vapi's REST PATCH does not accept `status: "ended"`. The reliable way
+  // to programmatically terminate a live call is via the controlUrl with
+  // `{type: "end-call"}` — the same WebSocket-backed channel used for
+  // add-message injection.
+  if (!controlUrl) {
+    console.warn("endVapiCall: missing controlUrl, cannot end call", { callId });
+    return { status: 0, body: "missing controlUrl" };
+  }
   try {
-    const resp = await fetch(`https://api.vapi.ai/call/${callId}`, {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${VAPI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ status: "ended" })
+    const resp = await fetch(controlUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "end-call" })
     });
     const text = await resp.text();
     console.log("endVapiCall resp", resp.status, text);
@@ -407,7 +440,7 @@ app.post("/vapi", async (req, res) => {
             await qstashScheduleAt({
               url: `${RENDER_BASE_URL}/timing/hard-cap`,
               notBeforeSeconds: hardCapAt,
-              body: { callId }
+              body: { callId, controlUrl }
             });
             console.log("Scheduled wrap-up + hard-cap timers", { callId, wrapupAt, hardCapAt });
           } else {
@@ -424,6 +457,7 @@ app.post("/vapi", async (req, res) => {
     if (type === "tool-calls") {
       const toolCall = message.toolCallList?.[0];
       const fn = toolCall?.function;
+      console.log("tool-calls:", { callId: message?.call?.id, name: fn?.name, arguments: fn?.arguments });
       if (fn?.name === "schedule_callback") {
         const { suggestedTime } = fn.arguments || {};
         // Trust the call's customer number (always E.164) over the model's
@@ -482,7 +516,7 @@ app.post("/vapi", async (req, res) => {
         return res.json({
           results: [{
             toolCallId: toolCall.toolCallId || toolCall.id,
-            result: `Callback scheduled. Confirm to the user: "Got it — I'll call you back ${suggestedTime}."`
+            result: `Got it, I'll call you back ${suggestedTime}. Take care.`
           }]
         });
       }
@@ -560,6 +594,15 @@ app.post("/timing/wrap-up", async (req, res) => {
   try {
     const { callId, controlUrl, content } = req.body || {};
     if (!controlUrl || !content) return res.status(400).json({ error: "Missing controlUrl/content" });
+    // Skip if the call already ended in this server lifetime — the controlUrl
+    // would 500 anyway and we'd just be logging noise. Stale QStash messages
+    // from prior server runs still slip through this check (in-memory only),
+    // but those at least no longer corrupt anything thanks to controlUrl
+    // returning a clean 500 we ignore.
+    if (callId && !timersScheduledForCallId.has(callId)) {
+      console.log("Skipping wrap-up: call already ended", { callId });
+      return res.json({ ok: true, skipped: true });
+    }
     await injectSystemMessageViaControlUrl({ controlUrl, content });
     console.log("Injected wrap-up signal", { callId });
     return res.json({ ok: true });
@@ -571,13 +614,18 @@ app.post("/timing/wrap-up", async (req, res) => {
 
 /**
  * POST /timing/hard-cap
- * QStash trigger at INTERVIEW_MAX_MINUTES. Forcibly ends the Vapi call.
+ * QStash trigger at INTERVIEW_MAX_MINUTES. Forcibly ends the Vapi call via
+ * the controlUrl. Idempotent — skips silently if the call already ended.
  */
 app.post("/timing/hard-cap", async (req, res) => {
   try {
-    const { callId } = req.body || {};
+    const { callId, controlUrl } = req.body || {};
     if (!callId) return res.status(400).json({ error: "Missing callId" });
-    await endVapiCall(callId);
+    if (!timersScheduledForCallId.has(callId)) {
+      console.log("Skipping hard-cap: call already ended", { callId });
+      return res.json({ ok: true, skipped: true });
+    }
+    await endVapiCall({ callId, controlUrl });
     console.log("Hard cap fired", { callId });
     return res.json({ ok: true });
   } catch (e) {

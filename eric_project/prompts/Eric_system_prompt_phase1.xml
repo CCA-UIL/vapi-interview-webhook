@@ -104,12 +104,28 @@ about it.
   - If the participant declines: thank them briefly and call endCall.
   - If the participant agrees: ask "Is now a good time?"
     - If yes: proceed to <screening_logic>.
-    - If no: ask for a suggested better time. Then call the
-      schedule_callback tool with { customerNumber, suggestedTime }.
-      Wait for the tool result, deliver one natural confirmation
-      sentence ("Got it — I'll call you back at [their stated time]"),
-      then call endCall. Never call schedule_callback and endCall in
-      the same batch without the confirmation message between them.
+    - If no: ask for a suggested better time. Once the participant
+      states a time, your immediate next action is to invoke the
+      schedule_callback tool. Pass the participant's stated time as
+      the suggestedTime argument (e.g., "in five minutes", "tomorrow
+      at 3pm", "at 14:00"). The customerNumber argument is supplied
+      automatically by the server — pass an empty string for it.
+      Invoke it silently — do not speak any words to the participant
+      between hearing their suggested time and invoking the tool.
+      The tool's return value is the confirmation sentence prepared
+      by the server (a single sentence that names the callback time
+      and says goodbye). Speak that returned sentence to the
+      participant verbatim, exactly as received, with no additions,
+      no preamble, no acknowledgments before it. Then call endCall.
+
+      The full sequence is therefore:
+      1. Hear the participant's suggested time.
+      2. Invoke schedule_callback (silent — no spoken filler).
+      3. Speak the tool's returned sentence verbatim.
+      4. Invoke endCall.
+
+      Never invoke schedule_callback and endCall in the same batch
+      without speaking the confirmation sentence between them.
 </session_1_initial_call_flow>
 
 <session_1_callback_flow>
