@@ -1,6 +1,11 @@
 import express from "express";
 import fetch from "node-fetch";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 // Vapi webhook bodies include the assistant config (system prompt + tools)
@@ -246,22 +251,67 @@ async function vapiPost(path, body) {
   return result;
 }
 
+// =============================================================================
+// Prompt assembly
+// =============================================================================
+//
+// The model unreliably routes between session_1_initial_call_flow and
+// session_1_callback_flow when both are present in the prompt — it tends
+// to default to the more prescriptive initial flow regardless of
+// {{IS_CALLBACK}}. To remove the choice, we strip the irrelevant block
+// from the prompt before sending it to Vapi via assistantOverrides.
+
+const PROMPT_PATH = path.join(
+  __dirname,
+  "eric_project",
+  "prompts",
+  "Eric_system_prompt_phase1.xml"
+);
+
+function loadPromptForCall({ isCallback }) {
+  let prompt = fs.readFileSync(PROMPT_PATH, "utf8");
+  if (isCallback) {
+    // Callback call — strip the initial flow body, keep callback flow
+    prompt = prompt.replace(
+      /<session_1_initial_call_flow>[\s\S]*?<\/session_1_initial_call_flow>/,
+      "<session_1_initial_call_flow>(omitted: this call is a callback, so the initial flow does not apply)</session_1_initial_call_flow>"
+    );
+  } else {
+    // Initial call — strip the callback flow body
+    prompt = prompt.replace(
+      /<session_1_callback_flow>[\s\S]*?<\/session_1_callback_flow>/,
+      "<session_1_callback_flow>(omitted: this call is not a callback)</session_1_callback_flow>"
+    );
+  }
+  return prompt;
+}
+
 async function startVapiCall({ assistantId, customerNumber, variableValues }) {
+  const isCallback = variableValues?.IS_CALLBACK === "true";
+  const promptContent = loadPromptForCall({ isCallback });
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
     customer: { number: customerNumber },
-    assistantOverrides: { variableValues }
+    assistantOverrides: {
+      variableValues,
+      model: { messages: [{ role: "system", content: promptContent }] }
+    }
   });
 }
 
 async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso, variableValues }) {
+  const callbackVars = { ...variableValues, IS_CALLBACK: "true" };
+  const promptContent = loadPromptForCall({ isCallback: true });
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
     customer: { number: customerNumber },
     schedulePlan: { earliestAt: earliestAtIso },
-    assistantOverrides: { variableValues: { ...variableValues, IS_CALLBACK: "true" } }
+    assistantOverrides: {
+      variableValues: callbackVars,
+      model: { messages: [{ role: "system", content: promptContent }] }
+    }
   });
 }
 

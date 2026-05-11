@@ -1,0 +1,33 @@
+{
+  "type": "function",
+  "async": false,
+  "function": {
+    "name": "schedule_callback",
+    "description": "Schedule a callback to the customer at their suggested time.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "suggestedTime": {
+          "type": "string"
+        },
+        "customerNumber": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "suggestedTime"
+      ]
+    }
+  },
+  "messages": [
+    {
+      "type": "request-start",
+      "content": ""
+    },
+    {
+      "type": "request-complete",
+      "content": "Got it. I'll call you back {{suggestedTime}}. Take care.",
+      "endCallAfterSpokenEnabled": true
+    }
+  ]
+}
