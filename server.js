@@ -95,8 +95,10 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
     ? parseInt(inMinDigit[1], 10)
     : (inMinWord ? wordToNumber(inMinWord[1]) : null);
   if (inMinValue) {
-    targetLocal.setMinutes(targetLocal.getMinutes() + inMinValue);
-    targetLocal.setSeconds(0, 0);
+    // Add minutes to the current time WITHOUT rounding seconds — rounding
+    // down to the start of the minute eats up to 59 seconds of the
+    // requested delay (so "in 1 minute" became "in ~30 seconds on average").
+    targetLocal.setTime(targetLocal.getTime() + inMinValue * 60 * 1000);
     return { targetLocal, localNow, nowUtc };
   }
 
@@ -107,8 +109,7 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
     ? parseInt(inHrDigit[1], 10)
     : (inHrWord ? wordToNumber(inHrWord[1]) : null);
   if (inHrValue) {
-    targetLocal.setHours(targetLocal.getHours() + inHrValue);
-    targetLocal.setSeconds(0, 0);
+    targetLocal.setTime(targetLocal.getTime() + inHrValue * 60 * 60 * 1000);
     return { targetLocal, localNow, nowUtc };
   }
 
@@ -286,23 +287,76 @@ function loadPromptForCall({ isCallback }) {
   return prompt;
 }
 
+// Vapi requires the FULL model object when overriding via assistantOverrides
+// — partial overrides are rejected (e.g., {model: {messages: [...]}} returns
+// 400 "model.provider must be one of..."). To avoid duplicating the
+// assistant's model config (provider, model name, temperature, maxTokens,
+// toolIds) in this file, we lazily fetch it once and cache the non-messages
+// fields. Cache survives the server lifetime; restart picks up changes.
+let cachedModelTemplate = null;
+async function getModelTemplate() {
+  if (cachedModelTemplate) return cachedModelTemplate;
+  const resp = await fetch(`https://api.vapi.ai/assistant/${ASSISTANT_ID}`, {
+    headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
+  });
+  if (!resp.ok) {
+    throw new Error(`getModelTemplate: GET /assistant/${ASSISTANT_ID} ${resp.status}`);
+  }
+  const data = await resp.json();
+  const { messages, ...rest } = data.model || {};
+  cachedModelTemplate = rest;
+  console.log("Cached assistant model template:", Object.keys(cachedModelTemplate).join(", "));
+  return cachedModelTemplate;
+}
+
+async function buildModelOverride({ isCallback }) {
+  const template = await getModelTemplate();
+  return {
+    ...template,
+    messages: [{ role: "system", content: loadPromptForCall({ isCallback }) }]
+  };
+}
+
 async function startVapiCall({ assistantId, customerNumber, variableValues }) {
   const isCallback = variableValues?.IS_CALLBACK === "true";
-  const promptContent = loadPromptForCall({ isCallback });
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
     customer: { number: customerNumber },
     assistantOverrides: {
       variableValues,
-      model: { messages: [{ role: "system", content: promptContent }] }
+      model: await buildModelOverride({ isCallback })
     }
   });
 }
 
+// Short callbacks (under this many minutes) get routed through QStash:
+// QStash holds the request, then fires our /timing/fire-callback handler
+// which dials Vapi immediately. This avoids Vapi's multi-minute scheduler
+// lead time, which empirically delays "in 1 minute" callbacks by 5+ min.
+// Longer callbacks fall through to Vapi's native schedulePlan.
+const QSTASH_CALLBACK_THRESHOLD_MINUTES = parseInt(process.env.QSTASH_CALLBACK_THRESHOLD_MINUTES || "10", 10);
+
 async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso, variableValues }) {
   const callbackVars = { ...variableValues, IS_CALLBACK: "true" };
-  const promptContent = loadPromptForCall({ isCallback: true });
+  const earliestMs = new Date(earliestAtIso).getTime();
+  const delayMinutes = (earliestMs - Date.now()) / 60000;
+
+  if (delayMinutes < QSTASH_CALLBACK_THRESHOLD_MINUTES && QSTASH_TOKEN && RENDER_BASE_URL) {
+    // Short-fuse path: QStash holds the request, then fires fire-callback
+    // at the target time, which dials Vapi immediately (no schedulePlan).
+    await qstashScheduleAt({
+      url: `${RENDER_BASE_URL}/timing/fire-callback`,
+      notBeforeSeconds: Math.floor(earliestMs / 1000),
+      body: { assistantId, customerNumber, variableValues: callbackVars }
+    });
+    console.log("Short-fuse callback queued via QStash", {
+      customerNumber, earliestAtIso, delayMinutes: delayMinutes.toFixed(2)
+    });
+    return { id: null, status: "qstash-scheduled", earliestAt: earliestAtIso };
+  }
+
+  // Long-fuse path: hand off to Vapi's native scheduler.
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
@@ -310,7 +364,7 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
     schedulePlan: { earliestAt: earliestAtIso },
     assistantOverrides: {
       variableValues: callbackVars,
-      model: { messages: [{ role: "system", content: promptContent }] }
+      model: await buildModelOverride({ isCallback: true })
     }
   });
 }
@@ -659,6 +713,36 @@ app.post("/timing/wrap-up", async (req, res) => {
   } catch (e) {
     console.error("/timing/wrap-up error", e);
     return res.status(500).json({ ok: false });
+  }
+});
+
+/**
+ * POST /timing/fire-callback
+ * QStash trigger at the participant's requested callback time, for
+ * short-fuse callbacks (under QSTASH_CALLBACK_THRESHOLD_MINUTES).
+ * Dials Vapi immediately, no schedulePlan, so there's no Vapi-scheduler
+ * lead-time on top of the participant's requested delay.
+ */
+app.post("/timing/fire-callback", async (req, res) => {
+  try {
+    const { assistantId, customerNumber, variableValues } = req.body || {};
+    if (!assistantId || !customerNumber) {
+      return res.status(400).json({ error: "Missing assistantId or customerNumber" });
+    }
+    const result = await vapiPost("/call", {
+      assistantId,
+      phoneNumberId: PHONE_NUMBER_ID,
+      customer: { number: customerNumber },
+      assistantOverrides: {
+        variableValues,
+        model: await buildModelOverride({ isCallback: true })
+      }
+    });
+    console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber });
+    return res.json({ ok: true, vapiCallId: result?.id });
+  } catch (e) {
+    console.error("/timing/fire-callback error:", e);
+    return res.status(500).json({ ok: false, error: e.message });
   }
 });
 
