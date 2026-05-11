@@ -542,34 +542,51 @@ app.post("/vapi", async (req, res) => {
         });
 
         const startMs = Date.now();
-        const wrapupAt = Math.floor((startMs + (INTERVIEW_MAX_MINUTES - WRAPUP_OFFSET_MINUTES) * 60 * 1000) / 1000);
+        // Three-stage close-out:
+        //   soft (T - WRAPUP_OFFSET_MINUTES): system message asks Eric to
+        //       wrap after the participant's NEXT response. Lets the
+        //       conversation finish its current turn naturally.
+        //   force (T - FORCE_CLOSE_OFFSET_SECONDS): Vapi force-speaks
+        //       the closing line and auto-hangs up. Fail-safe if Eric
+        //       didn't comply with the soft signal.
+        //   hard cap (T): final fallback — endVapiCall via controlUrl.
+        const FORCE_CLOSE_OFFSET_SECONDS = parseInt(process.env.FORCE_CLOSE_OFFSET_SECONDS || "30", 10);
+        const softWrapupAt = Math.floor((startMs + (INTERVIEW_MAX_MINUTES - WRAPUP_OFFSET_MINUTES) * 60 * 1000) / 1000);
+        const forceCloseAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000 - FORCE_CLOSE_OFFSET_SECONDS * 1000) / 1000);
         const hardCapAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000) / 1000);
 
-        // The closing sentence the assistant will be forced to speak at
-        // wrap-up time. Bypasses the model entirely via Vapi's "say"
-        // control action — the model has repeatedly ignored system-
-        // message wrap-up directives mid-interview.
-        // TODO: when Phase 2 wires up Sessions 2 and 3, branch this
-        // sentence on ACTIVE_SESSION.
-        const wrapupContent =
+        // TODO: branch on ACTIVE_SESSION when Sessions 2 and 3 are wired.
+        const closingSentence =
           `Thank you so much for everything you've shared today. ` +
           `When we speak next time, I'd like to hear about your experience ` +
           `with different cooking methods and your pressure cooker. ` +
           `Take care until then.`;
 
+        const softWrapupContent =
+          `WRAP-UP SIGNAL — time is almost up. After the participant ` +
+          `finishes their NEXT response, do not ask another follow-up. ` +
+          `Instead, briefly acknowledge their answer in three words or ` +
+          `fewer, then speak this closing sentence verbatim and call ` +
+          `endCall: "${closingSentence}"`;
+
         try {
           if (controlUrl && RENDER_BASE_URL && QSTASH_TOKEN) {
             await qstashScheduleAt({
               url: `${RENDER_BASE_URL}/timing/wrap-up`,
-              notBeforeSeconds: wrapupAt,
-              body: { callId, controlUrl, content: wrapupContent }
+              notBeforeSeconds: softWrapupAt,
+              body: { callId, controlUrl, content: softWrapupContent }
+            });
+            await qstashScheduleAt({
+              url: `${RENDER_BASE_URL}/timing/force-close`,
+              notBeforeSeconds: forceCloseAt,
+              body: { callId, controlUrl, content: closingSentence }
             });
             await qstashScheduleAt({
               url: `${RENDER_BASE_URL}/timing/hard-cap`,
               notBeforeSeconds: hardCapAt,
               body: { callId, controlUrl }
             });
-            console.log("Scheduled wrap-up + hard-cap timers", { callId, wrapupAt, hardCapAt });
+            console.log("Scheduled close-out timers", { callId, softWrapupAt, forceCloseAt, hardCapAt });
           } else {
             console.warn("Skipping timer schedule — missing controlUrl, RENDER_BASE_URL, or QSTASH_TOKEN");
           }
@@ -725,14 +742,37 @@ app.post("/timing/wrap-up", async (req, res) => {
       console.log("Skipping wrap-up: call already ended", { callId });
       return res.json({ ok: true, skipped: true });
     }
-    // Force the assistant to speak the closing line directly, then hang up
-    // after speech completes. The model is bypassed entirely — it cannot
-    // ignore this the way it ignored system-message directives.
-    await forceSpeakViaControlUrl({ controlUrl, content, endCallAfterSpoken: true });
-    console.log("Forced closing line + auto-end", { callId });
+    // Soft signal: inject a system message asking Eric to wrap up after the
+    // participant's NEXT response. If Eric complies, conversation ends
+    // naturally. If he doesn't, /timing/force-close fires next as a fallback.
+    await injectSystemMessageViaControlUrl({ controlUrl, content });
+    console.log("Soft wrap-up signal injected", { callId });
     return res.json({ ok: true });
   } catch (e) {
     console.error("/timing/wrap-up error", e);
+    return res.status(500).json({ ok: false });
+  }
+});
+
+/**
+ * POST /timing/force-close
+ * QStash trigger ~30 seconds before hard cap. If the call is still live
+ * at this point, Eric did not comply with the soft wrap-up signal — Vapi
+ * force-speaks the closing line and auto-hangs up.
+ */
+app.post("/timing/force-close", async (req, res) => {
+  try {
+    const { callId, controlUrl, content } = req.body || {};
+    if (!controlUrl || !content) return res.status(400).json({ error: "Missing controlUrl/content" });
+    if (callId && !timersScheduledForCallId.has(callId)) {
+      console.log("Skipping force-close: call already ended", { callId });
+      return res.json({ ok: true, skipped: true });
+    }
+    await forceSpeakViaControlUrl({ controlUrl, content, endCallAfterSpoken: true });
+    console.log("Force-close fired", { callId });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("/timing/force-close error", e);
     return res.status(500).json({ ok: false });
   }
 });
