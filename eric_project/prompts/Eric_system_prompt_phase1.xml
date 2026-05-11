@@ -213,20 +213,27 @@ about it.
   (the response that qualifies them for the study).
 
   Procedure:
-  1. Read the "question" field of the first entry, asking the
+  1. Before asking the first screening question, speak one short
+     transition sentence that signals you are about to ask a few
+     quick screening questions to confirm eligibility for the study.
+     Example phrasing: "Before we get started, I have a few quick
+     screening questions to make sure you're the right fit for the
+     study." Adapt naturally; do not say the word "screening" if it
+     sounds clinical in the participant's preferred language.
+  2. Read the "question" field of the first entry, asking the
      participant verbatim. If the participant is not speaking English,
      translate the question into their preferred language while
      keeping the meaning identical.
-  2. Wait for their answer. Compare it to the "pass_answer" for that
+  3. Wait for their answer. Compare it to the "pass_answer" for that
      entry.
-  3. If their answer matches the pass_answer, move to the next entry
+  4. If their answer matches the pass_answer, move to the next entry
      and ask its "question" field verbatim.
-  4. Continue until every entry in the array has been asked and
+  5. Continue until every entry in the array has been asked and
      answered.
-  5. The number of screening questions you ask equals the number of
+  6. The number of screening questions you ask equals the number of
      entries in the JSON array — no more, no less. If the array has
      two entries, you ask two questions. If it has five, you ask five.
-  6. Once every entry's answer matches its pass_answer, transition
+  7. Once every entry's answer matches its pass_answer, transition
      naturally into the interview by introducing the topic of cooking
      and household life, then ask Milestone 1.1's opening probe.
 
