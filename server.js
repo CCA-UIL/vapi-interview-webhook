@@ -384,6 +384,21 @@ async function injectSystemMessageViaControlUrl({ controlUrl, content }) {
   return { status: resp.status, body: text };
 }
 
+// Forces the assistant to speak the given text verbatim, bypassing the
+// model. Used for wrap-up because the model ignores system-message
+// directives mid-interview. endCallAfterSpoken makes Vapi hang up once
+// speech finishes — no separate end-call call needed.
+async function forceSpeakViaControlUrl({ controlUrl, content, endCallAfterSpoken = false }) {
+  const resp = await fetch(controlUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type: "say", content, endCallAfterSpoken })
+  });
+  const text = await resp.text();
+  console.log("controlUrl say resp", resp.status, text);
+  return { status: resp.status, body: text };
+}
+
 async function endVapiCall({ callId, controlUrl }) {
   // Vapi's REST PATCH does not accept `status: "ended"`. The reliable way
   // to programmatically terminate a live call is via the controlUrl with
@@ -530,18 +545,17 @@ app.post("/vapi", async (req, res) => {
         const wrapupAt = Math.floor((startMs + (INTERVIEW_MAX_MINUTES - WRAPUP_OFFSET_MINUTES) * 60 * 1000) / 1000);
         const hardCapAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000) / 1000);
 
-        // Wrap-up directive must be highly directive — verbose / multi-step
-        // instructions get ignored mid-interview. Inline the exact words to
-        // speak so the model has no interpretation to do.
+        // The closing sentence the assistant will be forced to speak at
+        // wrap-up time. Bypasses the model entirely via Vapi's "say"
+        // control action — the model has repeatedly ignored system-
+        // message wrap-up directives mid-interview.
+        // TODO: when Phase 2 wires up Sessions 2 and 3, branch this
+        // sentence on ACTIVE_SESSION.
         const wrapupContent =
-          `WRAP-UP SIGNAL — TIME IS UP. End the call now. Steps in order:\n` +
-          `1. Stop asking interview questions immediately. Do not ask another follow-up.\n` +
-          `2. Speak this exact sentence to the participant verbatim:\n` +
-          `   "Thank you so much for everything you've shared today. ` +
+          `Thank you so much for everything you've shared today. ` +
           `When we speak next time, I'd like to hear about your experience ` +
-          `with different cooking methods and your pressure cooker. Take care until then."\n` +
-          `3. Invoke endCall.\n` +
-          `Do not extend the conversation. Do not ask another question. Do not paraphrase the closing sentence — speak it verbatim.`;
+          `with different cooking methods and your pressure cooker. ` +
+          `Take care until then.`;
 
         try {
           if (controlUrl && RENDER_BASE_URL && QSTASH_TOKEN) {
@@ -707,17 +721,15 @@ app.post("/timing/wrap-up", async (req, res) => {
   try {
     const { callId, controlUrl, content } = req.body || {};
     if (!controlUrl || !content) return res.status(400).json({ error: "Missing controlUrl/content" });
-    // Skip if the call already ended in this server lifetime — the controlUrl
-    // would 500 anyway and we'd just be logging noise. Stale QStash messages
-    // from prior server runs still slip through this check (in-memory only),
-    // but those at least no longer corrupt anything thanks to controlUrl
-    // returning a clean 500 we ignore.
     if (callId && !timersScheduledForCallId.has(callId)) {
       console.log("Skipping wrap-up: call already ended", { callId });
       return res.json({ ok: true, skipped: true });
     }
-    await injectSystemMessageViaControlUrl({ controlUrl, content });
-    console.log("Injected wrap-up signal", { callId });
+    // Force the assistant to speak the closing line directly, then hang up
+    // after speech completes. The model is bypassed entirely — it cannot
+    // ignore this the way it ignored system-message directives.
+    await forceSpeakViaControlUrl({ controlUrl, content, endCallAfterSpoken: true });
+    console.log("Forced closing line + auto-end", { callId });
     return res.json({ ok: true });
   } catch (e) {
     console.error("/timing/wrap-up error", e);
