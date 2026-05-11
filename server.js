@@ -425,7 +425,13 @@ app.post("/vapi", async (req, res) => {
       const toolCall = message.toolCallList?.[0];
       const fn = toolCall?.function;
       if (fn?.name === "schedule_callback") {
-        const { customerNumber, suggestedTime } = fn.arguments || {};
+        const { suggestedTime } = fn.arguments || {};
+        // Trust the call's customer number (always E.164) over the model's
+        // tool argument, which can be malformed (missing country code,
+        // spelled out, etc.).
+        const customerNumber =
+          message?.call?.customer?.number ||
+          fn.arguments?.customerNumber;
         const timezone = inferTimezone(customerNumber);
         const parsed = parseSuggestedTimeToLocalDate({ suggestedTimeText: suggestedTime, timezone });
         if (!parsed) {
