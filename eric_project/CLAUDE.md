@@ -6,7 +6,7 @@ This document is the handoff context for an AI ethnographic interviewer project.
 
 **Goal:** Build "Eric," a Vapi-based outbound voice AI that conducts ethnographic interviews with Nairobi residents who own Electric Pressure Cookers (EPCs). The research explores cultural, emotional, social, and economic dimensions of EPC adoption.
 
-**Current state:** The interview prompt is iterated and tested across all three sessions in simulation. The architecture is solid. The next phase is adapting it to a production outbound-call system with persistent storage and per-participant scheduling.
+**Current state (2026-05-11):** Phase 1 is built and live. Eric runs Session 1 end-to-end against real phone numbers: introduction → consent → "is now a good time?" → screening → interview phases → soft wrap-up → forced closing line + auto-end. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays. Real-participant pilot with full 45-min calls is the next milestone.
 
 **The user's preferences (apply throughout):**
 - Direct, ruthlessly honest, no pleasantries
@@ -16,7 +16,7 @@ This document is the handoff context for an AI ethnographic interviewer project.
 - Note explicit hypotheses at the end of substantive responses
 - For graphics: only visualise data the user explicitly provides
 
-## Architecture (As Designed)
+## Architecture (As Built)
 
 The interview is structured as three separate ~45-minute calls, scheduled days or weeks apart:
 
@@ -24,23 +24,32 @@ The interview is structured as three separate ~45-minute calls, scheduled days o
 - **Session 2 — Cooking Technology and Meaning** (Phases 5-9): fuel/appliance history, EPC acquisition, EPC integration, community meaning, design feedback
 - **Session 3 — Daily Life, Economics, Full Picture** (Phases 10-14): economics, daily rhythm, mealtime/hospitality, health/transmission, post-meal/close
 
-Each session has phases. Each phase has milestones. Each milestone has an opening probe, optional follow-up probes, and an exit condition.
+Each session has phases. Each phase has milestones. Each milestone has an opening probe, optional follow-up probes, and an exit condition. **Phase 1 MVP only runs Session 1**; Sessions 2 and 3 prompt blocks are present but not yet exercised by the server.
 
 ### Session Detection (Server-Driven, Not Inferred)
 
-After many failed attempts at having Eric detect his session from context, the architecture moved to server-driven session assignment.
-
 The system prompt contains:
-- `<active_session>N</active_session>` at the top — value is 1, 2, or 3, set by the server at call start
-- `<prior_sessions_context>` block — populated by the server with summary content from previous sessions (empty for Session 1, has Session 1 summary for Session 2, has both Session 1 and Session 2 summaries for Session 3)
+- `<active_session>{{ACTIVE_SESSION}}</active_session>` at the top — value is "1", "2", or "3", set by the server at call start
+- `<is_callback>{{IS_CALLBACK}}</is_callback>` directly below — "true" or "false", set by the server
+- `<prior_sessions_context>{{PRIOR_SESSIONS_CONTEXT}}</prior_sessions_context>` — populated by the server with summary content from previous sessions (empty for Session 1)
 
-Eric reads the `<active_session>` value and runs the corresponding session's phases. He reads the `<prior_sessions_context>` block as ground truth for prior conversations and uses it for thread weaving, cross-session contradiction checks, and warm bridges in the opening line.
+Eric reads `<active_session>` and `<is_callback>` to pick his opening flow from a routing table in `<opening_flow_decision>` near the top of the prompt.
 
-**Critical lesson:** When summaries were placed inside other XML wrapper tags like `<session_1_summary>` and `<session_2_summary>`, they did not reach the model reliably through Vapi. Plain prose inside `<prior_sessions_context>` works. Do not re-introduce nested summary tags.
+### Server-Side Prompt Assembly (Critical)
+
+**The model proved unreliable at conditional routing between opening flow blocks.** When both `<session_1_initial_call_flow>` and `<session_1_callback_flow>` were present, even with `{{IS_CALLBACK}}` correctly substituted and an explicit routing table at the top, the model defaulted to whichever flow was more prescriptive (the initial flow) regardless of `IS_CALLBACK`.
+
+**Solution:** server reads the prompt template from disk, strips the inappropriate opening flow block based on IS_CALLBACK, and sends the assembled prompt via `assistantOverrides.model.messages` on every call. The model only ever sees one opening flow.
+
+Implications:
+- The prompt template at `eric_project/prompts/Eric_system_prompt_phase1.xml` is the source of truth
+- The Vapi-stored prompt on the assistant is a fallback only — never used in practice
+- Prompt edits no longer require `update-assistant.ps1` — just commit + push triggers Render redeploy
+- The strip regex is line-anchored (`^<tag>...^</tag>$` with `m` flag) because both flow blocks contain inline prose mentions of each other's tag names
 
 ### The Strengthening Pattern (Probe Quality)
 
-Several milestones across the three sessions have been "strengthened" — meaning they contain additional structure beyond the basic milestone format. The pattern that works:
+Several milestones have been "strengthened" with extra structure:
 
 1. **Opening probe** (basic open question)
 2. **Anti-deflection rule** with named common deflection phrases that should trigger re-probe
@@ -49,103 +58,104 @@ Several milestones across the three sessions have been "strengthened" — meanin
 5. **Tightened exit condition** that references the missing_piece_check
 6. **Increased fallback budget** (4-5 turns instead of 3)
 
-The strengthened milestones are: 1.3, 1.4, 4.1, 4.2, 5.3, 6.2, 6.3, 7.1, 7.3, 8.1, 9.1, 11.2, 12.1, 12.3, 13.2, 13.3, 14.3.
+Strengthened milestones: 1.3, 1.4, 4.1, 4.2, 5.3, 6.2, 6.3, 7.1, 7.3, 8.1, 9.1, 11.2, 12.1, 12.3, 13.2, 13.3, 14.3.
+Unstrengthened: 1.1, 1.2, 2.1-2.4, 3.1-3.3, 4.3, 5.1-5.2, 6.1, 7.2, 8.2, 9.2-9.3, 10.1-10.3, 13.1, 14.1-14.2.
 
-The unstrengthened milestones (1.1, 1.2, 2.1-2.4, 3.1-3.3, 4.3, 5.1-5.2, 6.1, 7.2, 8.2, 9.2-9.3, 10.1-10.3, 13.1, 14.1-14.2) consistently produce thin data with guarded participants. Strengthening any of them follows the same template above.
-
-**Important:** Do not strengthen further milestones without first testing with real participants. The current strengthening produces noticeable interview-length increase with guarded SIMs. Real cooperative participants likely make this a non-issue, but we don't have that data yet.
+**Real-participant probing depth is still being validated.** In short test calls (3-min), Eric was observed to be less probing than in sim. May be artifact of the test cap; full 45-min test pending.
 
 ### Other Key Prompt Blocks
 
-- `<continuity_check>` — handles participants who reject prior conversation history. If a participant says "I don't remember talking to you before" in Session 2 or 3, Eric verifies once with a specific summary detail. If rejection holds, ends the call rather than restarting from Session 1.
-- `<post_close_behaviour>` — hard rule that after the closing line, Eric only outputs minimal acknowledgments ("Take care," "Goodbye"). Prevents the methodology-monologue post-close drift.
-- `<placeholder_handling>` — never read bracketed template placeholders like [the method they named] aloud.
-- `<voice_and_manner>` — TTS-aware rules: no emojis, no markdown, no narration of internal reasoning.
-- `<appliance_disambiguation_principle>` — for every cooking appliance the participant names, resolve both technology (heating mechanism) and fuel/power source. Six example probe patterns provided.
-- `<pre_probe_checklist>` — five checks Eric runs before every probe (Redundancy, Attribution, Category-listing, Deflection, Ambiguity). Check 4 (Deflection) has been heavily strengthened.
+- `<continuity_check>` — handles participants who reject prior conversation history
+- `<post_close_behaviour>` — hard rule that after the closing line, Eric only outputs minimal acknowledgments
+- `<placeholder_handling>` — never read bracketed template placeholders aloud
+- `<voice_and_manner>` — TTS-aware rules: no emojis, no markdown, no narration of internal reasoning
+- `<appliance_disambiguation_principle>` — for every cooking appliance the participant names, resolve both technology and fuel/power source
+- `<pre_probe_checklist>` — five checks Eric runs before every probe (Redundancy, Attribution, Category-listing, Deflection, Ambiguity)
+- `<screening_logic>` — embeds `{{SCREENING_QUESTIONS_JSON}}` inline in the prompt body so the model sees the actual JSON questions verbatim, not just the variable name. Includes a transition sentence requirement before the first question.
 
 ## Repository Layout
 
-The project files exist in two locations:
+```
+vapi-interview-webhook/
+├── server.js                         # Production server, deployed to Render. Express + Supabase + QStash.
+├── package.json, package-lock.json
+├── render.yaml                       # Render service config
+├── ARCHITECTURE.md                   # Mermaid component + sequence diagrams
+├── DEPLOYMENT.md                     # Render env vars, Vapi config, test plan, curl examples
+├── .env / .env.example               # Local-runtime env, mirrors Render env
+├── scripts/
+│   ├── start-call.ps1 / .sh          # Trigger a call: `.\scripts\start-call.ps1 +1NUM Name`
+│   ├── inspect-db.ps1 / .sh          # Read Supabase tables
+│   └── update-assistant.ps1          # Push a local prompt file to the Vapi assistant (rarely needed now —
+│                                     # server reads prompt per-call from disk)
+└── eric_project/
+    ├── CLAUDE.md                     # This file
+    ├── README.md
+    ├── prompts/
+    │   ├── Eric_system_prompt_phase1.xml         # PRODUCTION PROMPT, source of truth, ~158KB
+    │   ├── Eric_Interview_Orchestrator_28Apr26.xml  # Legacy orchestrator, reference only
+    │   ├── Vapi_system_prompt_milestone.txt      # Original milestone prompt, reference only
+    │   ├── session_1_and_2_summaries_reference.txt  # Reference summaries for Session 3 testing
+    │   └── diagnostic_variable_interpolation.txt # One-off Vapi diagnostic prompt
+    ├── server/
+    │   └── server_28Apr2026.js       # Legacy server, reference only
+    ├── sim_prompts/
+    │   ├── SIM_revised.txt           # Standard SIM (solo mother of three, charcoal→EPC)
+    │   ├── SIM_resistant.txt         # Harder SIM for stress testing
+    │   ├── SIM_mombasa.txt           # Alternative persona
+    │   └── SIM_session_3.txt         # Session 3-aware SIM
+    ├── reference/
+    │   └── Cooking_in_Nairobi_interview_guide.docx
+    └── vapi_config/
+        └── schedule_callback.json    # Snapshot of the Vapi-side tool config (source of truth backup)
+```
 
-**Anthropic project files** (read-only references, in `/mnt/project/` if accessing from Claude environment):
-- `Vapi_clone_system_prompt_30Mar26.txt` — early version of Eric's prompt, kept for reference. Do not use.
-- `Agent_to_Agent_chat_March_2026_MS_feedback_0704.docx` — original feedback that informed the strengthening patterns. Reference document.
+## Phase 1: Built — state of the system
 
-**Working files** (in `/mnt/user-data/outputs/` from prior session, copy these into your project):
-- `Vapi_system_prompt_milestone.txt` — **THE CURRENT ERIC PROMPT.** Three sessions, 14 phases, 152KB. This is the prompt to adapt for production.
-- `SIM_system_prompt_revised.txt` — Standard SIM persona for testing (solo mother of three, charcoal→EPC, jewelry sale, woodsmoke memory).
-- `SIM_system_prompt_resistant.txt` — Harder SIM for stress testing.
-- `SIM_system_prompt_mombasa.txt` — Alternative persona (woman with two daughters, husband in Mombasa, gas-primary, grandmother-taught).
-- `SIM_system_prompt_session_3.txt` — Session 3-aware SIM (knows about prior sessions for testing).
-- `session_1_and_2_summaries_for_session_3.txt` — Combined prior-session summaries used in Session 3 testing.
+### What's deployed
 
-**Production code (existing, needs adaptation):**
-- `Eric_Interview_Orchestrator_28Apr26.xml` — The CURRENT production prompt running on Vapi. This is a single-call orchestrator with timed phase transitions and screening. **Will be replaced by an adapted version of `Vapi_system_prompt_milestone.txt`.**
-- `server_28Apr2026.js` — The CURRENT production server. Express, Render-hosted. Handles `/start-call`, `/vapi` webhook, `/timing/transition`. Will be substantially rewritten for the new architecture.
+- `POST /start-call` — body `{customerNumber, name?, sessionNumber?=1, priorSessionsContext?, assistantId?}`. Upserts participant + session in Supabase, posts to Vapi `/call` with `assistantOverrides.model.messages` (the per-call assembled prompt) and runtime `variableValues`.
+- `POST /vapi` — webhook. Handles `status-update` (start = schedule the three-stage close-out timers, end = mark session completed), `tool-calls` (`schedule_callback`), `end-of-call-report` (persist transcript, fallback callback parsing).
+- `POST /timing/wrap-up` — soft signal, system message injection via controlUrl
+- `POST /timing/force-close` — Vapi `{type:"say"}` force-speaks the closing line, `endCallAfterSpoken: true` auto-hangs up
+- `POST /timing/hard-cap` — final fail-safe, Vapi `{type:"end-call"}` via controlUrl
+- `POST /timing/fire-callback` — QStash trigger for short-fuse callbacks; dials Vapi immediately with no schedulePlan
 
-## What's Working in Production Right Now
+### Prompt structure
 
-The current production system (running on Render with the orchestrator prompt and `server_28Apr2026.js`):
+The prompt at `eric_project/prompts/Eric_system_prompt_phase1.xml`:
+- Top: `<active_session>{{ACTIVE_SESSION}}</active_session>` + `<is_callback>{{IS_CALLBACK}}</is_callback>` + `<opening_flow_decision>` table
+- `<prior_sessions_context>{{PRIOR_SESSIONS_CONTEXT}}</prior_sessions_context>`
+- `<role>` — sanitized of "Nairobi" / "EPC" specifics (those leaked into screening as supplemental questions)
+- `<runtime_variables>` documentation
+- `<session_1_initial_call_flow>` — full intro, consent, "is now a good time", screening or callback scheduling
+- `<session_1_callback_flow>` — brief reidentification + availability check
+- `<screening_logic>` — embeds `{{SCREENING_QUESTIONS_JSON}}` inline; transition sentence required before first question
+- `<time_management>` — describes the wrap-up signal protocol
+- `<session_assignment>` — describes the routing rules (`<opening_flow_decision>` at top is the primary routing)
+- `<continuity_check>`, `<placeholder_handling>`, `<study_context>`
+- `<interview_structure>` — all 14 phases, all milestones (Sessions 2 and 3 included for Phase 2 readiness)
+- `<how_to_probe>`, `<scope_discipline>`, `<voice_and_manner>`, `<post_close_behaviour>`, `<following_unexpected_depth>`
+- `<session_2_opening_protocol>`, `<session_3_opening_protocol>` — sanitized of vivid example phrases that previously leaked into Session 1 ("three kids", "pilau and your mother's kitchen")
+- `<closing_protocol>` with `<session_1_close>`, `<session_2_close>`, `<session_3_close>`
+- `<examples>`
 
-- POST `/start-call` initiates an outbound Vapi call given a customer number and assistant ID
-- Vapi calls back to `/vapi` with status-update, tool-calls, and end-of-call-report events
-- QStash schedules timed phase transitions during the call (will be removed)
-- Screening flow runs at call start (driven by `SCREENING_QUESTIONS_JSON` runtime variable)
-- Three-strikes-and-out rule for screening
-- Callback scheduling via `schedule_callback` tool with in-memory 1-hour dedup
-- End-of-call data is processed
-- Initiated from Postman by POSTing to `/start-call`
+### Three-stage close-out
 
-Environment variables on Render:
-- `ASSISTANT_ID`
-- `INTERVIEW_MAX_MINUTES`
-- `INTERVIEW_PHASES_JSON`
-- `QSTASH_TOKEN`
-- `SCREENING_QUESTIONS_JSON` (currently `[{"id":1,"question":"Do you currently use a cookstove?","pass_answer":"yes"}]`)
-- `VAPI_API_KEY`
+Configured in `server.js`. Times relative to call start:
+- **Soft signal** at T - `WRAPUP_OFFSET_MINUTES` (default 2): system message asks Eric to wrap after the participant's NEXT response. Inlines the verbatim closing sentence so no lookup needed.
+- **Force close** at T - `FORCE_CLOSE_OFFSET_SECONDS` (default 30): if call still live, Vapi force-speaks the closing line and auto-hangs up. The model is bypassed entirely.
+- **Hard cap** at T - `INTERVIEW_MAX_MINUTES`: final fail-safe, `endVapiCall` via controlUrl `{type:"end-call"}`.
 
-## Phase 1 Work (To Be Done Next)
+The closing sentence is hardcoded in `server.js`: *"Well, that wraps up today's interview session. Thank you so much for everything you've shared today. When we speak next time, I'd like to hear about your experience with different cooking methods and your pressure cooker. Take care until then."* TODO: branch on ACTIVE_SESSION when Phase 2 wires Sessions 2/3.
 
-The work that's been scoped but not yet built:
+### Callback scheduling — short-fuse vs long-fuse
 
-### 1. Adapt Eric's Prompt (Session 1 Only Mode)
+When Eric invokes `schedule_callback`, the server splits behavior by delay:
+- **Delay < `QSTASH_CALLBACK_THRESHOLD_MINUTES` (default 10)** → server schedules a QStash POST to `/timing/fire-callback` at the target time. That handler dials Vapi immediately with no schedulePlan. Avoids Vapi's multi-minute scheduler lead time on tight schedules ("in 1 minute" was empirically taking 5+ minutes via Vapi schedulePlan).
+- **Delay ≥ threshold** → uses Vapi's native `schedulePlan.earliestAt`. Lead time is negligible relative to the wait.
 
-Take `Vapi_system_prompt_milestone.txt` and produce a production version that:
-
-- Keeps the screening flow protocol from the current orchestrator (do not modify screening yet — user wants to keep it as-is for testing)
-- Includes the session_assignment block but always passes Session 1 as the active session in MVP
-- Has all 14 phases defined (so Sessions 2 and 3 are ready when Phase 2 work happens), but Session 1 is the only one called by the active_session value
-- Adds a 43-minute wrap-up handling instruction (see Time Management below)
-- All the strengthening, missing_piece_checks, voice rules, post_close_behaviour, etc. preserved
-- Runtime variables interpolated by Vapi at call start:
-  - `INTERVIEW_MAX_MINUTES` (kept)
-  - `IS_CALLBACK` (kept)
-  - `SCREENING_QUESTIONS_JSON` (kept)
-  - `ACTIVE_SESSION` (new, value 1/2/3)
-  - `PRIOR_SESSIONS_CONTEXT` (new, empty for Session 1)
-  - Possibly `PARTICIPANT_NAME` — needs decision (see deferred questions below)
-
-### 2. Rewrite the Server
-
-Build a new `server.js` that:
-
-- Keeps `/start-call` endpoint with similar interface
-- Keeps `/vapi` webhook with status-update, tool-calls, end-of-call-report handlers
-- **Removes** `/timing/transition` and the QStash phase-transition setup
-- **Adds** a 43-minute soft-warning timer using QStash (server injects an add-message via Vapi telling Eric to wrap up)
-- **Adds** a 45-minute hard-cap fail-safe using Vapi's call-end API
-- Keeps callback scheduling with in-memory dedup (migration to database is Phase 2 work)
-- Keeps `end_call`, `schedule_callback`, `evaluate_screening_response` tools (logic unchanged for MVP)
-- Integrates with Supabase for participant tracking
-
-User wants a clean rewrite (not minimal-change). Confirm with user before starting that this is still the preference.
-
-### 3. Database Schema
-
-User has been recommended Supabase free tier. They have not yet confirmed which database they're using. Confirm before writing schema.
-
-Proposed schema:
+### Database schema (live in Supabase)
 
 ```sql
 CREATE TABLE participants (
@@ -160,13 +170,13 @@ CREATE TABLE sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   participant_id UUID REFERENCES participants(id) NOT NULL,
   session_number INT NOT NULL CHECK (session_number IN (1, 2, 3)),
-  call_id TEXT,                    -- Vapi call ID
-  status TEXT NOT NULL,            -- scheduled, in_progress, completed, failed, screened_out
+  call_id TEXT,
+  status TEXT NOT NULL,
   started_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
-  summary TEXT,                    -- populated after call ends (Phase 3 work)
-  prior_sessions_context TEXT,     -- populated before call from earlier sessions
-  transcript JSONB,                -- full transcript stored from end-of-call-report
+  summary TEXT,
+  prior_sessions_context TEXT,
+  transcript JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(participant_id, session_number)
 );
@@ -177,114 +187,145 @@ CREATE TABLE scheduled_calls (
   session_number INT NOT NULL CHECK (session_number IN (1, 2, 3)),
   scheduled_at TIMESTAMPTZ NOT NULL,
   vapi_call_id TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending, sent, completed, failed
+  status TEXT NOT NULL DEFAULT 'pending',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
-### 4. Postman/curl Examples
+RLS is enabled on all three tables with no policies (server uses service-role key, anon key is denied).
 
-- Initial call trigger
-- Manually verifying database state
-- Inspecting scheduled callbacks
+`createSessionRow` upserts on `(participant_id, session_number)` — re-calling the same phone resets the row to a fresh `scheduled` state, so test cycles don't hit unique-constraint errors.
 
-## Time Management — 43 / 45 Minute Pattern
+### Render env vars (production)
 
-Replaces the timed-phase-transition mechanism. New approach:
+| Var | Value |
+|---|---|
+| `VAPI_API_KEY` | Vapi API key |
+| `ASSISTANT_ID` | The Eric assistant ID on Vapi |
+| `PHONE_NUMBER_ID` | Vapi phone number resource ID |
+| `QSTASH_TOKEN` | Upstash QStash token |
+| `RENDER_BASE_URL` | Public Render URL, e.g. `https://vapi-interview-webhook.onrender.com` |
+| `INTERVIEW_MAX_MINUTES` | 45 in production, 3-5 for short tests |
+| `WRAPUP_OFFSET_MINUTES` | 2 in production |
+| `FORCE_CLOSE_OFFSET_SECONDS` | 30 (default) |
+| `QSTASH_CALLBACK_THRESHOLD_MINUTES` | 10 (default) |
+| `SCREENING_QUESTIONS_JSON` | JSON array of `{id, question, pass_answer}` |
+| `SUPABASE_URL` | Supabase project URL (no `/rest/v1` suffix) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service-role JWT (server-side only, bypasses RLS) |
 
-- **Soft warning at 43 minutes** — server uses QStash to schedule a webhook fire 43 minutes after call start. Webhook injects an add-message via Vapi's API telling Eric: "We're at 43 minutes — please wrap up by asking your final question, delivering the closing line, and ending the call."
-- **Hard cap at 45 minutes** — second QStash trigger 45 minutes after call start. If the call is still active when this fires, server calls Vapi's call-end API directly as a fail-safe.
+### Vapi assistant config (production)
 
-Eric needs a corresponding instruction block in his prompt explaining what to do when he receives the wrap-up message — skip remaining milestones, deliver the open-ended close, then the closing line, then call `end_call`.
+- Model: `claude-sonnet-4-20250514`, `temperature: 0.4`, `maxTokens: 250` (matches sim parity)
+- Voice: ElevenLabs (voice ID configured in dashboard)
+- Transcriber: Speechmatics, `maxDelay: 500` (Speechmatics floor)
+- `firstMessageMode: assistant-speaks-first-with-model-generated-message`, empty `firstMessage`
+- `startSpeakingPlan.waitSeconds: 0.3`, `stopSpeakingPlan.numWords: 3, voiceSeconds: 0.3`
+- `endCallFunctionEnabled: true`
+- `model.toolIds: ["1349e77b-..."]` referencing the reusable `schedule_callback` tool
+
+### `schedule_callback` tool (reusable, Vapi org-level)
+
+Snapshot at `eric_project/vapi_config/schedule_callback.json`. Key fields:
+- Parameters: `suggestedTime` (required, string), `customerNumber` (optional — server uses call.customer.number)
+- `messages[0]`: `{type: "request-start", content: ""}` — empty content suppresses the model's "let me set that up" filler
+- `messages[1]`: `{type: "request-complete", content: "Got it. I'll call you back {{suggestedTime}}. Take care.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends. The model is bypassed.
+
+## Hard-Won Vapi Knowledge
+
+Recorded so future iterations don't relearn these the hard way.
+
+### Webhook & runtime
+
+- **Express body limit must be `10mb`.** Vapi webhook payloads include the full assistant config (system prompt + tools) plus the running transcript. Default 100kb returns 413 PayloadTooLargeError before any handler runs. Symptom: sessions stuck at `scheduled`, no application logs.
+- **Variable interpolation has two channels.** `{{VAR}}` in the prompt body substitutes inline at call time. Bare-name references (e.g., "Parse SCREENING_QUESTIONS_JSON" in prose) also reach the model through a separate channel. Use `{{...}}` when placement matters; either works for reading values by name.
+- **Vapi rejects partial `model` overrides.** `assistantOverrides.model = {messages: [...]}` returns 400 "model.provider must be one of...". Must include the full model object (provider, model, temperature, maxTokens, toolIds). Server caches the assistant's model fields once and uses them as the base.
+
+### Tools
+
+- **Two tool shapes coexist:** legacy `model.functions[]` (no `messages` config) and newer `model.tools[]` (supports `messages`). Migrate to `tools[]` to use the messages config.
+- **Two tool storage modes:** inline (`model.tools[]` directly on assistant) vs reusable (`POST /tool` then reference via `model.toolIds[]`). Only reusable tools appear in the dashboard's Tools page.
+- **`request-complete` with `endCallAfterSpokenEnabled: true`** lets Vapi speak a tool result and auto-end without involving the model. Bypasses the model's tendency to ignore tool results.
+- **`request-start` with empty content** suppresses the model's pre-tool-call filler ("let me set that up", "just a sec"). Confirmed accepted by Vapi.
+- **`{{result}}` does NOT substitute** in tool message templates. `{{output}}` doesn't either. **`{{toolArgName}}` (e.g., `{{suggestedTime}}`) DOES substitute** with the argument value. Use tool args, not the result, for content interpolation.
+
+### Call control
+
+- **Ending a call:** `PATCH /call/:id` with `{status: "ended"}` returns 400 ("property status should not exist"). Use the call's `controlUrl` with `{type: "end-call"}` instead. The controlUrl appears in the `status-update` webhook payload at `message.call.monitor.controlUrl`.
+- **Forcing the assistant to speak:** `controlUrl` with `{type: "say", content: "...", endCallAfterSpoken: true}` makes Vapi speak the literal text and (optionally) hang up after. Bypasses the model entirely. Combined with the soft-signal-then-force-say staging, gives reliable wrap-ups.
+- **Mid-conversation system messages are unreliable.** Adding a `{role: "system"}` message via `add-message` mid-call is hit-or-miss — the model often ignores it and continues its current behavior. For hard requirements, use `{type: "say"}` instead.
+- **`endedReason: "assistant-ended-call-after-message-spoken"`** is what you see when `endCallAfterSpokenEnabled` triggers.
+
+### Prompt construction
+
+- **Server-side prompt assembly is more reliable than model-side conditional routing.** When the prompt has multiple opening flows and asks the model to pick by IS_CALLBACK, the model picks the most prescriptive option regardless. Strip the inappropriate block on the server, send the assembled prompt via `assistantOverrides.model.messages`.
+- **Strip-regex must be line-anchored.** `^<tag>...^</tag>$` with `m` flag. Inline prose mentions of tag names ("see <session_1_callback_flow>") would otherwise be matched and the regex would lazily delete through to the actual closing tag of the wrong block.
+- **Prompt size:** 158KB has worked. Anthropic Sonnet 4 handles this fine. Watch for impacts on first-token latency; not currently a problem.
+
+### Other
+
+- **Vapi assistant pre-config:** Vapi's `firstMessageMode: assistant-speaks-first` with empty `firstMessage` causes the assistant to wait silently. Use `assistant-speaks-first-with-model-generated-message` to have the model generate the first turn from the system prompt.
+- **`schedule_callback`'s `customerNumber` argument is unreliable.** The model passes the literal `"{{customerNumber}}"` placeholder string, or no value, or a malformed phone. Server takes `customerNumber` from `message.call.customer.number` (guaranteed E.164) and ignores the model's value.
+
+## Resolved Decisions
+
+- **Single Render service** for MVP. Don't split into orchestrator + summariser.
+- **Participant names will be used.** `PARTICIPANT_NAME` is a runtime variable. Eric addresses the participant by name when available.
+- **Database: Supabase free tier.** Schema as above. RLS enabled with no policies.
+- **Server-side prompt assembly per call** for opening-flow routing, not model-side conditional logic.
+- **Three-stage close-out** (soft → force-say → hard cap) instead of a single force action.
+- **QStash short-fuse routing** for callbacks under threshold; Vapi schedulePlan for longer.
+- **`schedule_callback` is a reusable Vapi tool** (in dashboard Tools list), referenced by `toolIds` on the assistant.
+- **Tool result text is spoken by Vapi via `request-complete` + `endCallAfterSpoken`**, not by the model.
+
+## Iteration History — Lessons Learned (Don't Repeat These)
+
+- **Inference-based session detection failed multiple times.** Switched to server-driven `<active_session>` value plus server-side prompt assembly. Don't try model-side conditional routing again.
+- **Don't quote a trigger phrase inside a prohibition.** Telling the model "don't ask about Nairobi residents who own EPCs" made it ask about exactly that. Frame rules positively. Describe categories abstractly. Pink-elephant trap. (Saved as feedback memory.)
+- **Don't over-extrapolate from one diagnostic.** A test that proves one mechanism doesn't disprove others. Confirm with the user before declaring their existing code broken. (Saved as feedback memory.)
+- **Anchor regex to top-level tags when stripping prompt blocks.** Both opening flows reference each other's tag names in their prose. Unanchored regex catastrophically eats the wrong block.
+- **The model unreliably honors mid-conversation system messages.** Don't rely on inject-and-comply for hard requirements (wrap-ups, end-call). Use Vapi's `{type:"say"}` to bypass the model.
+- **Soft signal → force-say staging beats single force action.** Single force-say barges in mid-question. Two-stage gives Eric a chance to wrap up at the next natural turn boundary, with force as fail-safe.
+- **Strengthened milestones produce depth at cost of naturalness when participants are guarded.** Real-participant data still needed to validate.
+- **The 43/45-minute pattern came from rejecting "abrupt hang-up at 45 minutes" in favour of "soft warning then fail-safe." Now staged into three.**
+- **Earlier "Session 2 detection worked" reports were misleading** — appeared to work because of fallback paths in the prompt, not because the summary was actually being read by Eric. Use diagnostic markers to distinguish "appears to work" from "is verifiably working."
 
 ## Phase 2 and Phase 3 Work (Deferred)
 
-Don't build these in Phase 1.
-
 **Phase 2** — Add Sessions 2 and 3 with manual summarisation:
-- Build the data model for tracking participant state
-- Manually populate `prior_sessions_context` for testing (a human reads the call transcript and writes a summary)
-- Add per-participant cross-session scheduling (server schedules Session 2 N days after Session 1 completes, and Session 3 M days after Session 2)
-- Skip screening flow on Sessions 2 and 3
+- Manually populate `sessions.prior_sessions_context` for testing (a human reads the call transcript and writes a summary)
+- Add per-participant cross-session scheduling (Session 2 N days after Session 1 completes, Session 3 M days after Session 2)
+- Skip screening flow on Sessions 2 and 3 (already wired in prompt; needs server side)
+- Branch the closing line in `server.js` on ACTIVE_SESSION (currently hardcoded to Session 1)
+- Validate session_2 and session_3 opening protocols on real callbacks
 
 **Phase 3** — Automated summarisation pipeline:
 - LLM-based summary generation (Anthropic API call) triggered after each call ends
 - Summary stored in `sessions.summary`
 - Retrieved into `sessions.prior_sessions_context` for the next session
-- The summarisation prompt itself is yet to be designed — it needs to produce summaries in the same prose style as the existing manual summaries (see `session_1_and_2_summaries_for_session_3.txt` for reference)
+- Summarisation prompt to be designed; should match the prose style of `eric_project/prompts/session_1_and_2_summaries_reference.txt`
 
-## Resolved Decisions
+## Current Open Issues / Punch List
 
-All previously deferred questions have been answered by the user:
-
-- **Single Render service** for MVP. Don't split into orchestrator + summariser.
-- **Participant names will be used.** `PARTICIPANT_NAME` is a runtime variable. Eric can address the participant by name when available (e.g., "Good to speak with you, Janet"). The `participants` table in Supabase has a `name` column for this.
-- **Clean rewrite of server.js.** Don't preserve the existing structure. Build a new server.js from scratch with only what the new architecture needs.
-- **Database: Supabase free tier.** Use the schema specified in this document. The user will create the Supabase project; first task is to provide them with environment variable setup instructions and the schema DDL.
-
-## Known Vapi Quirks and Constraints
-
-Hard-won knowledge from extensive debugging:
-
-1. **Plain-prose context blocks reach the model. Wrapped XML summary tags do not.** Use `<prior_sessions_context>` with prose content inside, not nested `<session_X_summary>` tags.
-
-2. **Vapi has no documented system prompt size limit, but 152KB worked in testing.** Don't grow significantly past current size without retesting.
-
-3. **Vapi's "No result returned" error appears mid-transcript intermittently.** Cause unknown; appears to be a tool call returning null. Not prompt-fixable. Investigate Vapi-side.
-
-4. **Vapi's call termination after Eric's closing line is unreliable.** The post_close_behaviour rule in the prompt mitigates but doesn't fully solve. The 45-minute hard cap fail-safe is partially compensating for this.
-
-5. **Sonnet 4.6 is the current model.** Confirmed by user. Don't change without testing.
-
-6. **Runtime variable interpolation in Vapi:** Variables in the system prompt are interpolated using `{{variable_name}}` syntax. Verify the exact syntax in the existing `Eric_Interview_Orchestrator_28Apr26.xml` file before writing the new prompt.
-
-## Iteration History — Lessons Learned (Don't Repeat These)
-
-These are mistakes made and corrected. Do not retread.
-
-- **Inference-based session detection failed multiple times.** Switched to server-driven `<active_session>` value. Don't try to make the model infer session from context again.
-
-- **Structural fixes proposed without empirical verification wasted multiple cycles.** When something fails, run a diagnostic test (e.g., the PURPLE ELEPHANT MARKER test that proved content placement issues) before proposing structural fixes. Always verify the prompt loaded in Vapi matches what was edited (paste back the first 200 characters as a check).
-
-- **Strengthened milestones produce depth at cost of naturalness when participants are guarded.** The SIM is more guarded than real participants. Don't optimise heavily against SIM behaviour without real-participant data.
-
-- **The 43/45-minute pattern came from rejecting "abrupt hang-up at 45 minutes" in favour of "soft warning then fail-safe." Keep this design.**
-
-- **Earlier "Session 2 detection worked" reports were misleading** — Session 2 detection appeared to work because of fallback paths in the prompt, not because the summary was actually being read by Eric. Distinguish "appears to work" from "is verifiably working" by using diagnostic markers.
+1. **Validate real-participant probing depth on a full 45-min call.** Short test calls (3-min) showed Eric being less probing than in sim. Likely artifact of time pressure + token budget; user has set `maxTokens=250`, `temperature=0.4` to match sim. Pending test result.
+2. **If probing is still thin at 45 min**, the next suspects are the latency tweaks (`startSpeakingPlan.waitSeconds: 0.3`, `transcriber.maxDelay: 500`) — they were lowered for snappier conversation but may be reducing model deliberation time. Consider partial revert toward 0.5-0.8s.
+3. **Vapi's "No result returned" error** appears in transcripts intermittently. Cause unknown; not prompt-fixable. Investigate Vapi-side.
+4. **Stale QStash messages from prior server runs** occasionally fire and hit the timing handlers with dead callIds. Skipped silently via `timersScheduledForCallId` in-memory check. Annoying log noise but harmless.
+5. **Screening question priming.** Eric still occasionally improvises eligibility checks beyond `SCREENING_QUESTIONS_JSON` if the role/study_context blocks describe the target population. The role has been sanitized; `study_context` could also be sanitized if needed.
+6. **Phase 2 / Phase 3 work** queued.
 
 ## Testing Approach
 
-For prompt iteration, use the SIM personas in `/mnt/user-data/outputs/`. The standard testing pattern:
-
+For prompt iteration, use the SIM personas in `eric_project/sim_prompts/`. Standard pattern:
 1. Set Vapi prompt to the Eric prompt being tested
 2. Set the SIM prompt as a separate Vapi assistant
 3. Call one assistant with the other (agent-to-agent test)
 4. Manually toggle `<active_session>` value and `<prior_sessions_context>` content for each session
 5. Review transcript
 
-For production code, real call testing is the next step. SIM testing is at diminishing returns.
+For production code, real call testing via:
+```powershell
+.\scripts\start-call.ps1 +1NUMBER Name
+.\scripts\inspect-db.ps1 sessions   # check the lifecycle
+```
 
-## Current Open Issues / Punch List
-
-1. **Build Phase 1** (the work scoped above)
-2. **Investigate Vapi "No result returned" error** — appears in transcripts, prompt-side fixes don't address it
-3. **Investigate Vapi post-close termination** — call doesn't always end cleanly after closing line; 45-minute fail-safe mitigates
-4. **Real-participant pilot** — system has been validated extensively in simulation. Real-call testing is needed before further prompt iteration.
-5. **Phase 2 and Phase 3 work** queued behind Phase 1
-
-## How to Proceed
-
-All architectural decisions are made. When user gives permission to start Phase 1:
-
-1. Confirm the user has created a Supabase project and gathered the connection credentials (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`)
-2. Apply the database schema (DDL provided in this document) to the Supabase project
-3. Adapt `Vapi_system_prompt_milestone.txt` for Session 1 production mode — preserves all 14 phases for future Phase 2 work, but Session 1 is the only one called by the active_session value in MVP. Add the screening flow (kept as-is from the existing orchestrator), the 43-minute wrap-up handling instruction, and the new runtime variables including `PARTICIPANT_NAME`
-4. Clean-rewrite `server.js` from scratch (do not preserve the existing structure). Use Express, integrate with Supabase, integrate with QStash for the 43/45-minute timers, integrate with Vapi APIs for call initiation, message injection, and call termination
-5. Provide deployment instructions for Render (environment variables, build/start commands) and Vapi (assistant configuration, runtime variable mapping)
-6. Provide Postman/curl examples for testing
-
-Test in stages:
-- First, an outbound call to user's own phone using the new prompt to verify Session 1 runs end-to-end
-- Then, callback scheduling test
-- Then, the 43-minute wrap-up trigger test (use a shorter time for testing — e.g., trigger at 5 minutes for quick validation)
-- Then, full call with the 45-minute fail-safe
+For staged short-cycle testing of timing: set `INTERVIEW_MAX_MINUTES=3, WRAPUP_OFFSET_MINUTES=1, FORCE_CLOSE_OFFSET_SECONDS=30` on Render. Whole close-out cycle plays in 3 minutes.
