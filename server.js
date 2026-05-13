@@ -555,20 +555,31 @@ app.post("/vapi", async (req, res) => {
         const forceCloseAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000 - FORCE_CLOSE_OFFSET_SECONDS * 1000) / 1000);
         const hardCapAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000) / 1000);
 
+        // Fallback closing if Eric doesn't comply with the soft signal. The
+        // force-close speaks this verbatim and hangs up — used only when Eric
+        // continues the interview past the soft signal window.
         // TODO: branch on ACTIVE_SESSION when Sessions 2 and 3 are wired.
         const closingSentence =
           `Well, that wraps up today's interview session. ` +
           `Thank you so much for everything you've shared today. ` +
-          `When we speak next time, I'd like to hear about your experience ` +
-          `with different cooking methods and your pressure cooker. ` +
           `Take care until then.`;
 
+        // Soft signal directs Eric to schedule the next session before
+        // hanging up. The schedule_next_session tool's request-complete
+        // message handles the spoken confirmation + closing + auto-hangup.
         const softWrapupContent =
           `WRAP-UP SIGNAL — time is almost up. After the participant ` +
           `finishes their NEXT response, do not ask another follow-up. ` +
-          `Instead, briefly acknowledge their answer in three words or ` +
-          `fewer, then speak this closing sentence verbatim and call ` +
-          `endCall: "${closingSentence}"`;
+          `Briefly acknowledge their answer in three words or fewer, then ` +
+          `propose the next session with this exact phrasing: "Before we ` +
+          `go, I'd like to schedule our next conversation. I was thinking ` +
+          `three days from now at this same time. Does that work for you, ` +
+          `or would another time be better?" Wait for the participant's ` +
+          `answer. Then invoke the schedule_next_session tool with ` +
+          `suggestedTime set to either "in three days at this same time" ` +
+          `(if they accepted the default) or their stated time. Do not ` +
+          `speak again after invoking the tool — the platform will speak ` +
+          `the confirmation and end the call automatically.`;
 
         try {
           if (controlUrl && RENDER_BASE_URL && QSTASH_TOKEN) {
@@ -665,6 +676,105 @@ app.post("/vapi", async (req, res) => {
           }]
         });
       }
+
+      // ---- schedule_next_session: schedule the next session of this study ----
+      if (fn?.name === "schedule_next_session") {
+        const { suggestedTime } = fn.arguments || {};
+        const currentSession = parseInt(
+          message?.call?.assistantOverrides?.variableValues?.ACTIVE_SESSION || "1",
+          10
+        );
+        const nextSession = currentSession + 1;
+        if (nextSession > 3) {
+          // After Session 3 there is no further session.
+          return res.json({
+            results: [{
+              toolCallId: toolCall.toolCallId || toolCall.id,
+              result: "The study is complete — there is no further session."
+            }]
+          });
+        }
+
+        const customerNumber = message?.call?.customer?.number;
+        const timezone = inferTimezone(customerNumber);
+        const parsed = parseSuggestedTimeToLocalDate({
+          suggestedTimeText: suggestedTime,
+          timezone
+        });
+        if (!parsed) {
+          return res.json({
+            results: [{
+              toolCallId: toolCall.toolCallId || toolCall.id,
+              result: "Could not parse suggested time"
+            }]
+          });
+        }
+        const { targetLocal, localNow, nowUtc } = parsed;
+        const offsetMs = localNow.getTime() - nowUtc.getTime();
+        const utcTarget = new Date(targetLocal.getTime() - offsetMs);
+
+        const assistantIdForNext =
+          message?.call?.assistantId || message?.assistant?.id || ASSISTANT_ID;
+        const participantName =
+          message?.call?.assistantOverrides?.variableValues?.PARTICIPANT_NAME || "";
+
+        // Next session is its own first-of-its-kind contact, not an IS_CALLBACK
+        // retry. Build variableValues accordingly.
+        const nextSessionVars = buildVariableValues({
+          activeSession: nextSession,
+          priorSessionsContext: "",
+          isCallback: false,
+          participantName
+        });
+
+        const scheduled = await vapiPost("/call", {
+          assistantId: assistantIdForNext,
+          phoneNumberId: PHONE_NUMBER_ID,
+          customer: { number: customerNumber },
+          schedulePlan: { earliestAt: utcTarget.toISOString() },
+          assistantOverrides: {
+            variableValues: nextSessionVars,
+            model: await buildModelOverride({ isCallback: false })
+          }
+        });
+
+        console.log("Next session scheduled", {
+          fromSession: currentSession,
+          toSession: nextSession,
+          customerNumber,
+          scheduledAt: utcTarget.toISOString(),
+          vapiCallId: scheduled?.id
+        });
+
+        // Persist to scheduled_calls (best-effort).
+        try {
+          const { data: p } = await supabase
+            .from("participants")
+            .select("id")
+            .eq("phone_number", customerNumber)
+            .maybeSingle();
+          if (p?.id) {
+            await recordScheduledCall({
+              participantId: p.id,
+              sessionNumber: nextSession,
+              scheduledAt: utcTarget.toISOString(),
+              vapiCallId: scheduled?.id
+            });
+          }
+        } catch (e) {
+          console.error("Persist scheduled_calls (next session) failed:", e);
+        }
+
+        // Tool result text is unused — Vapi speaks the request-complete
+        // message configured on the tool (which interpolates {{suggestedTime}}).
+        return res.json({
+          results: [{
+            toolCallId: toolCall.toolCallId || toolCall.id,
+            result: `Session ${nextSession} scheduled for ${suggestedTime}.`
+          }]
+        });
+      }
+
       return res.json({ results: [] });
     }
 
