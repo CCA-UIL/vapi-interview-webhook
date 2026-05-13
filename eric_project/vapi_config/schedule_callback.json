@@ -3,7 +3,7 @@
   "async": false,
   "function": {
     "name": "schedule_callback",
-    "description": "Schedule a callback to the customer at their suggested time.",
+    "description": "Schedule a callback for the CURRENT session only. Use ONLY when the participant declines to start the current interview right now and asks to be called back later for the SAME session. Do NOT use this for scheduling the next session of the study. Use schedule_next_session for that.",
     "parameters": {
       "type": "object",
       "properties": {

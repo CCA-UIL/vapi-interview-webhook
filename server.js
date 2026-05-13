@@ -387,12 +387,24 @@ async function injectSystemMessageViaControlUrl({ controlUrl, content }) {
 // Forces the assistant to speak the given text verbatim, bypassing the
 // model. Used for wrap-up because the model ignores system-message
 // directives mid-interview. endCallAfterSpoken makes Vapi hang up once
-// speech finishes — no separate end-call call needed.
-async function forceSpeakViaControlUrl({ controlUrl, content, endCallAfterSpoken = false }) {
+// speech finishes — no separate end-call call needed. interruptAssistant
+// false makes Vapi wait for the assistant to finish its current speech
+// before doing the say (no barging in mid-question).
+async function forceSpeakViaControlUrl({
+  controlUrl,
+  content,
+  endCallAfterSpoken = false,
+  interruptAssistantEnabled = true
+}) {
   const resp = await fetch(controlUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "say", content, endCallAfterSpoken })
+    body: JSON.stringify({
+      type: "say",
+      content,
+      endCallAfterSpoken,
+      interruptAssistantEnabled
+    })
   });
   const text = await resp.text();
   console.log("controlUrl say resp", resp.status, text);
@@ -848,10 +860,17 @@ app.post("/timing/wrap-up", async (req, res) => {
     }
     // Force Eric to SAY the scheduling question verbatim (no auto-end —
     // the conversation continues so the participant can answer and Eric
-    // can invoke schedule_next_session). System-message wrap-up signals
-    // were unreliable; a natural Q->A turn is far more likely to trigger
-    // the tool call.
-    await forceSpeakViaControlUrl({ controlUrl, content, endCallAfterSpoken: false });
+    // can invoke schedule_next_session). interruptAssistantEnabled=false
+    // makes Vapi wait for Eric to finish his current speech before doing
+    // the say, instead of barging in mid-question. System-message
+    // wrap-up signals were unreliable; a natural Q->A turn is far more
+    // likely to trigger the tool call.
+    await forceSpeakViaControlUrl({
+      controlUrl,
+      content,
+      endCallAfterSpoken: false,
+      interruptAssistantEnabled: false
+    });
     console.log("Soft wrap-up scheduling question forced", { callId });
     return res.json({ ok: true });
   } catch (e) {
