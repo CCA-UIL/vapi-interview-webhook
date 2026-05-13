@@ -604,13 +604,23 @@ app.post("/vapi", async (req, res) => {
         const forceCloseAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000 - FORCE_CLOSE_OFFSET_SECONDS * 1000) / 1000);
         const hardCapAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000) / 1000);
 
+        // Branch the close-out copy on which session this is. Sessions 1
+        // and 2 propose scheduling the next conversation; Session 3 is the
+        // final session and just thanks/says goodbye with no scheduling.
+        const currentSession = parseInt(
+          message?.call?.assistantOverrides?.variableValues?.ACTIVE_SESSION || "1",
+          10
+        );
+        const isFinalSession = currentSession >= 3;
+
         // Fallback closing if Eric doesn't invoke schedule_next_session.
         // Force-close speaks this verbatim and hangs up.
-        // TODO: branch on ACTIVE_SESSION when Sessions 2 and 3 are wired.
-        const closingSentence =
-          `Well, that wraps up today's interview session. ` +
-          `Thank you so much for everything you've shared today. ` +
-          `Take care until then.`;
+        const closingSentence = isFinalSession
+          ? `Well, that wraps up our final interview session. ` +
+            `Thank you so much for everything you've shared across our conversations. Take care.`
+          : `Well, that wraps up today's interview session. ` +
+            `Thank you so much for everything you've shared today. ` +
+            `Take care until then.`;
 
         // Soft signal: force Eric to SAY this verbatim via Vapi's say
         // action. The /timing/wrap-up handler stores this text and waits
@@ -618,28 +628,32 @@ app.post("/vapi", async (req, res) => {
         // the say — so we never barge into the participant's pending
         // response to Eric's last interview question.
         //
-        // Includes the "wraps up + thanks" transition before the scheduling
-        // proposal, so the closing happens in the right order: end-of-
-        // interview signal first, scheduling question second. The
-        // schedule_next_session tool's request-complete then closes with
-        // just the confirmation + farewell, no transition.
+        // Sessions 1 and 2: includes "wraps up + thanks" transition before
+        // a scheduling question. After participant answers, Eric invokes
+        // schedule_next_session and Vapi's request-complete closes the call.
         //
-        // The scheduling question is yes/no on the 3-day default. If the
-        // participant says no, Eric's natural follow-up will ask for a
-        // specific time (vs an open-ended "or another time" which
-        // previously got vague answers Eric just accepted).
-        const softWrapupContent =
-          `Well, that wraps up our interview for today. ` +
-          `Thank you so much for everything you've shared. ` +
-          `Before we go, I'd like to schedule our next conversation. ` +
-          `Would three days from now at this same time work for you?`;
+        // Session 3: final session, no further scheduling. Soft signal
+        // becomes the full farewell with endCallAfterSpoken so the call
+        // ends after Vapi speaks it.
+        const softWrapupContent = isFinalSession
+          ? `Well, that wraps up our final interview session. ` +
+            `Thank you so much for everything you've shared across our conversations. Take care.`
+          : `Well, that wraps up our interview for today. ` +
+            `Thank you so much for everything you've shared. ` +
+            `Before we go, I'd like to schedule our next conversation. ` +
+            `Would three days from now at this same time work for you?`;
 
         try {
           if (controlUrl && RENDER_BASE_URL && QSTASH_TOKEN) {
             await qstashScheduleAt({
               url: `${RENDER_BASE_URL}/timing/wrap-up`,
               notBeforeSeconds: softWrapupAt,
-              body: { callId, controlUrl, content: softWrapupContent }
+              body: {
+                callId,
+                controlUrl,
+                content: softWrapupContent,
+                endCallAfterSpoken: isFinalSession
+              }
             });
             await qstashScheduleAt({
               url: `${RENDER_BASE_URL}/timing/force-close`,
@@ -672,16 +686,16 @@ app.post("/vapi", async (req, res) => {
       const speechStatus = message?.status;
       const callId = message?.call?.id;
       if (role === "user" && speechStatus === "stopped" && callId && pendingWrapUpByCallId.has(callId)) {
-        const { controlUrl, content } = pendingWrapUpByCallId.get(callId);
+        const { controlUrl, content, endCallAfterSpoken } = pendingWrapUpByCallId.get(callId);
         pendingWrapUpByCallId.delete(callId);
         try {
           await forceSpeakViaControlUrl({
             controlUrl,
             content,
-            endCallAfterSpoken: false,
+            endCallAfterSpoken: !!endCallAfterSpoken,
             interruptAssistantEnabled: false
           });
-          console.log("Wrap-up scheduling question spoken after user-stop", { callId });
+          console.log("Wrap-up spoken after user-stop", { callId, endCallAfterSpoken });
         } catch (e) {
           console.error("Failed to speak queued wrap-up:", e);
         }
@@ -977,24 +991,31 @@ app.post("/vapi", async (req, res) => {
  */
 app.post("/timing/wrap-up", async (req, res) => {
   try {
-    const { callId, controlUrl, content } = req.body || {};
+    const { callId, controlUrl, content, endCallAfterSpoken = false } = req.body || {};
     if (!controlUrl || !content) return res.status(400).json({ error: "Missing controlUrl/content" });
     if (callId && !timersScheduledForCallId.has(callId)) {
       console.log("Skipping wrap-up: call already ended", { callId });
       return res.json({ ok: true, skipped: true });
     }
-    // Queue the scheduling question. It will be force-spoken when the next
+    // Queue the wrap-up text. It will be force-spoken when the next
     // speech-update arrives with role=user, status=stopped — i.e. when the
     // participant finishes their next turn. Avoids speaking it while the
     // participant is still expected to answer Eric's pending question.
-    // If no user-stop arrives before /timing/force-close fires, the
-    // force-close path takes over and speaks the closing line instead.
-    pendingWrapUpByCallId.set(callId, { controlUrl, content, queuedAt: Date.now() });
+    //
+    // endCallAfterSpoken=true means this is Session 3's final farewell:
+    // Vapi will hang up automatically after speaking. For Sessions 1 and 2,
+    // false — the conversation continues for the scheduling exchange.
+    pendingWrapUpByCallId.set(callId, {
+      controlUrl,
+      content,
+      endCallAfterSpoken,
+      queuedAt: Date.now()
+    });
     // Mark this call as in the wrap-up phase. Any schedule_callback
     // invoked from this point on gets intercepted and redirected to the
     // schedule_next_session flow.
     inWrapUpPhaseForCallId.add(callId);
-    console.log("Wrap-up scheduling question queued (waiting for user-stop)", { callId });
+    console.log("Wrap-up text queued (waiting for user-stop)", { callId, endCallAfterSpoken });
     return res.json({ ok: true, queued: true });
   } catch (e) {
     console.error("/timing/wrap-up error", e);
