@@ -6,7 +6,7 @@ This document is the handoff context for an AI ethnographic interviewer project.
 
 **Goal:** Build "Eric," a Vapi-based outbound voice AI that conducts ethnographic interviews with Nairobi residents who own Electric Pressure Cookers (EPCs). The research explores cultural, emotional, social, and economic dimensions of EPC adoption.
 
-**Current state (2026-05-11):** Phase 1 is built and live. Eric runs Session 1 end-to-end against real phone numbers: introduction → consent → "is now a good time?" → screening → interview phases → soft wrap-up → forced closing line + auto-end. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays. Real-participant pilot with full 45-min calls is the next milestone.
+**Current state (2026-05-13):** Phase 1 is built and the full Session 1 → 2 → 3 chain has been validated end-to-end on short test calls. Eric runs each session against real phone numbers with session-appropriate opening flows, screening only on Session 1, scheduling of the next session at the end of Sessions 1 and 2 (with a defensive server-side intercept for tool selection), and a final farewell with auto-hang-up at the end of Session 3. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays for both `schedule_callback` and `schedule_next_session`. Real-participant pilot with full 45-min calls is the next milestone.
 
 **The user's preferences (apply throughout):**
 - Direct, ruthlessly honest, no pleasantries
@@ -115,11 +115,11 @@ vapi-interview-webhook/
 ### What's deployed
 
 - `POST /start-call` — body `{customerNumber, name?, sessionNumber?=1, priorSessionsContext?, assistantId?}`. Upserts participant + session in Supabase, posts to Vapi `/call` with `assistantOverrides.model.messages` (the per-call assembled prompt) and runtime `variableValues`.
-- `POST /vapi` — webhook. Handles `status-update` (start = schedule the three-stage close-out timers, end = mark session completed), `tool-calls` (`schedule_callback`), `end-of-call-report` (persist transcript, fallback callback parsing).
-- `POST /timing/wrap-up` — soft signal, system message injection via controlUrl
-- `POST /timing/force-close` — Vapi `{type:"say"}` force-speaks the closing line, `endCallAfterSpoken: true` auto-hangs up
-- `POST /timing/hard-cap` — final fail-safe, Vapi `{type:"end-call"}` via controlUrl
-- `POST /timing/fire-callback` — QStash trigger for short-fuse callbacks; dials Vapi immediately with no schedulePlan
+- `POST /vapi` — webhook. Handles `status-update` (start = schedule the three-stage close-out timers, end = clean up + mark session completed), `speech-update` (fires queued wrap-up say after participant-stop), `tool-calls` (`schedule_callback` and `schedule_next_session`, with server-side intercept for wrap-up-phase misroutes), `end-of-call-report` (persist transcript, fallback callback parsing).
+- `POST /timing/wrap-up` — QStash trigger at T - `WRAPUP_OFFSET_MINUTES`. **Queues** the wrap-up text in `pendingWrapUpByCallId` and marks the call in `inWrapUpPhaseForCallId`. Does NOT speak yet — that happens in the speech-update handler when the participant's next turn ends.
+- `POST /timing/force-close` — QStash trigger ~30s before hard cap. Force-speaks the closing line via Vapi `{type:"say"}`, `endCallAfterSpoken:true` auto-hangs up. Skips silently if call already ended.
+- `POST /timing/hard-cap` — final fail-safe at INTERVIEW_MAX_MINUTES. Ends Vapi call via controlUrl `{type:"end-call"}`. Skips silently if call already ended.
+- `POST /timing/fire-callback` — QStash trigger for short-fuse callbacks. Dials Vapi immediately with the appropriate prompt (controlled by `isCallback` in body). Used by both `schedule_callback` (short Session 1 retry) and `schedule_next_session` (short Session 2/3 dial).
 
 ### Prompt structure
 
@@ -142,18 +142,36 @@ The prompt at `eric_project/prompts/Eric_system_prompt_phase1.xml`:
 
 ### Three-stage close-out
 
-Configured in `server.js`. Times relative to call start:
-- **Soft signal** at T - `WRAPUP_OFFSET_MINUTES` (default 2): system message asks Eric to wrap after the participant's NEXT response. Inlines the verbatim closing sentence so no lookup needed.
-- **Force close** at T - `FORCE_CLOSE_OFFSET_SECONDS` (default 30): if call still live, Vapi force-speaks the closing line and auto-hangs up. The model is bypassed entirely.
-- **Hard cap** at T - `INTERVIEW_MAX_MINUTES`: final fail-safe, `endVapiCall` via controlUrl `{type:"end-call"}`.
+Configured in `server.js`'s status-update handler. Times relative to call start:
 
-The closing sentence is hardcoded in `server.js`: *"Well, that wraps up today's interview session. Thank you so much for everything you've shared today. When we speak next time, I'd like to hear about your experience with different cooking methods and your pressure cooker. Take care until then."* TODO: branch on ACTIVE_SESSION when Phase 2 wires Sessions 2/3.
+- **Soft signal** at T - `WRAPUP_OFFSET_MINUTES` (default 2). QStash fires `/timing/wrap-up`, which does NOT speak immediately — it **queues** the wrap-up text in `pendingWrapUpByCallId` and marks the call in `inWrapUpPhaseForCallId`. When the next `speech-update` arrives with `role=user, status=stopped` (i.e. participant finishes their next turn), the handler force-speaks the queued text via Vapi `{type:"say"}` with `interruptAssistantEnabled:false`. This means the soft signal never barges in mid-question.
+- **Force close** at T - `FORCE_CLOSE_OFFSET_SECONDS` (default 30). If the call is still live, force-speaks the closing line and auto-hangs up. Fail-safe if Eric didn't wrap on the soft signal.
+- **Hard cap** at T = `INTERVIEW_MAX_MINUTES`. Forces `endVapiCall` via controlUrl `{type:"end-call"}`. Final fail-safe.
 
-### Callback scheduling — short-fuse vs long-fuse
+**Branching on session:**
 
-When Eric invokes `schedule_callback`, the server splits behavior by delay:
-- **Delay < `QSTASH_CALLBACK_THRESHOLD_MINUTES` (default 10)** → server schedules a QStash POST to `/timing/fire-callback` at the target time. That handler dials Vapi immediately with no schedulePlan. Avoids Vapi's multi-minute scheduler lead time on tight schedules ("in 1 minute" was empirically taking 5+ minutes via Vapi schedulePlan).
+- **Sessions 1 and 2**: soft text is *"Well, that wraps up our interview for today. Thank you so much for everything you've shared. Before we go, I'd like to schedule our next conversation. Would three days from now at this same time work for you?"* — `endCallAfterSpoken:false` (conversation continues so the participant can answer and Eric can invoke `schedule_next_session`).
+- **Session 3 (final)**: soft text is *"Well, that wraps up our final interview session. Thank you so much for everything you've shared across our conversations. Take care."* — `endCallAfterSpoken:true` (Vapi auto-hangs up; no scheduling step).
+
+The server reads `ACTIVE_SESSION` from variableValues to branch.
+
+### Callback / next-session scheduling — short-fuse vs long-fuse
+
+Both `schedule_callback` (for "I can't talk now, call me back later" during the initial call's consent step) and `schedule_next_session` (at end of Sessions 1 and 2) use the same short-fuse pattern:
+
+- **Delay < `QSTASH_CALLBACK_THRESHOLD_MINUTES` (default 10)** → server schedules a QStash POST to `/timing/fire-callback` at the target time. That handler dials Vapi immediately with no schedulePlan. Avoids Vapi's multi-minute scheduler lead time on tight schedules.
 - **Delay ≥ threshold** → uses Vapi's native `schedulePlan.earliestAt`. Lead time is negligible relative to the wait.
+
+The `/timing/fire-callback` body includes `isCallback` and `variableValues` (with `ACTIVE_SESSION`), so the handler builds the right per-call prompt regardless of whether it's a Session 1 callback or a Session 2/3 dial.
+
+### Server-side tool intercept (wrap-up phase)
+
+The model stubbornly picks `schedule_callback` over `schedule_next_session` for short-fuse times ("in one minute") at end of session, despite the tool descriptions explicitly forbidding it. Server-side compensates:
+
+- `inWrapUpPhaseForCallId` Set is populated when `/timing/wrap-up` queues the soft signal.
+- In the tool-calls handler, if Eric invokes `schedule_callback` while the call is in `inWrapUpPhaseForCallId`, the server **reassigns `fn.name = "schedule_next_session"`** before the rest of the handler runs. The Session 2/3 dial is scheduled correctly regardless of which tool the model picked.
+
+If `schedule_next_session`'s `suggestedTime` argument is unparseable (the model sometimes invokes it prematurely with its own clarifying question as the argument), the server falls back to scheduling "in three days at this same time" rather than failing silently. A real follow-up call gets queued; the audio confirmation is the only thing that sounds off in that recovery case.
 
 ### Database schema (live in Supabase)
 
@@ -217,18 +235,36 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 
 - Model: `claude-sonnet-4-20250514`, `temperature: 0.4`, `maxTokens: 250` (matches sim parity)
 - Voice: ElevenLabs (voice ID configured in dashboard)
-- Transcriber: Speechmatics, `maxDelay: 500` (Speechmatics floor)
+- Transcriber: Speechmatics or Deepgram (varies; check assistant config). Watch transcription accuracy on quiet/short answers.
 - `firstMessageMode: assistant-speaks-first-with-model-generated-message`, empty `firstMessage`
 - `startSpeakingPlan.waitSeconds: 0.3`, `stopSpeakingPlan.numWords: 3, voiceSeconds: 0.3`
 - `endCallFunctionEnabled: true`
-- `model.toolIds: ["1349e77b-..."]` referencing the reusable `schedule_callback` tool
+- `serverMessages: ["function-call", "tool-calls", "status-update", "hang", "end-of-call-report", "speech-update"]`. `speech-update` is required for the wrap-up flow to detect participant-stop events.
+- `model.toolIds`: both `schedule_callback` (`1349e77b-...`) and `schedule_next_session` (`93497b3c-...`)
 
 ### `schedule_callback` tool (reusable, Vapi org-level)
 
-Snapshot at `eric_project/vapi_config/schedule_callback.json`. Key fields:
-- Parameters: `suggestedTime` (required, string), `customerNumber` (optional — server uses call.customer.number)
-- `messages[0]`: `{type: "request-start", content: ""}` — empty content suppresses the model's "let me set that up" filler
-- `messages[1]`: `{type: "request-complete", content: "Got it. I'll call you back {{suggestedTime}}. Take care.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends. The model is bypassed.
+Snapshot at `eric_project/vapi_config/schedule_callback.json`. Used at the start of a Session 1 call when the participant says "not now, call me back later".
+- Parameters: `suggestedTime` (required), `customerNumber` (optional — server uses call.customer.number; the model's value is ignored).
+- Description explicitly forbids using it for next-session scheduling.
+- `messages[0]`: `{type: "request-start", content: ""}` — empty content suppresses the model's filler.
+- `messages[1]`: `{type: "request-complete", content: "Got it. I'll call you {{suggestedTime}}. Take care.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends. Wording is intentionally neutral (no "back") so it sounds correct even when the server intercept redirects this invocation to schedule_next_session.
+
+### `schedule_next_session` tool (reusable, Vapi org-level)
+
+Snapshot at `eric_project/vapi_config/schedule_next_session.json`. Used at the end of Sessions 1 and 2 to schedule the next session in the multi-session study.
+- Parameters: `suggestedTime` (required, must be a concrete time, not a question or placeholder).
+- Description explicitly requires the model to wait for a concrete time from the participant before invoking — addresses the model's tendency to invoke prematurely with a clarifying question as the argument.
+- `messages[0]`: `{type: "request-start", content: ""}` — suppresses filler.
+- `messages[1]`: `{type: "request-complete", content: "Got it. I'll call you {{suggestedTime}} for our next conversation. Take care until then.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends.
+
+### Per-call prompt assembly
+
+The server reads `eric_project/prompts/Eric_system_prompt_phase1.xml` at call time and **strips opening flow blocks that don't match the active session/IS_CALLBACK combination** before sending the assembled prompt via `assistantOverrides.model.messages`. The model sees only the one opening flow it should use.
+
+`loadPromptForCall({ isCallback, activeSession })` in server.js handles the stripping. Sessions 2 and 3 also strip `screening_logic` (per design — they skip screening). The strip regex is line-anchored (`^<tag>...^</tag>$` with `m` flag) because both flow blocks contain inline prose mentions of other flows' tag names that would otherwise be eaten by lazy matching.
+
+Effect: prompt edits no longer require `update-assistant.ps1`. Commit + push triggers Render redeploy and the next call uses the new prompt. The Vapi-stored prompt is a fallback only.
 
 ## Hard-Won Vapi Knowledge
 
@@ -251,9 +287,12 @@ Recorded so future iterations don't relearn these the hard way.
 ### Call control
 
 - **Ending a call:** `PATCH /call/:id` with `{status: "ended"}` returns 400 ("property status should not exist"). Use the call's `controlUrl` with `{type: "end-call"}` instead. The controlUrl appears in the `status-update` webhook payload at `message.call.monitor.controlUrl`.
-- **Forcing the assistant to speak:** `controlUrl` with `{type: "say", content: "...", endCallAfterSpoken: true}` makes Vapi speak the literal text and (optionally) hang up after. Bypasses the model entirely. Combined with the soft-signal-then-force-say staging, gives reliable wrap-ups.
+- **Forcing the assistant to speak:** `controlUrl` with `{type: "say", content: "...", endCallAfterSpoken: true}` makes Vapi speak the literal text and (optionally) hang up after. Bypasses the model entirely.
+- **`interruptAssistantEnabled: false` on a `say` action** makes Vapi wait for the assistant's current speech to finish before doing the say. Use this when force-speaking mid-conversation to avoid barging into the middle of Eric's question.
+- **`speech-update` webhook events** fire with `role` ∈ {`user`, `assistant`} and `status` ∈ {`started`, `stopped`}. Enabling it in `serverMessages` lets the server detect when the participant finishes their turn — used to defer wrap-up speech to a natural turn boundary.
 - **Mid-conversation system messages are unreliable.** Adding a `{role: "system"}` message via `add-message` mid-call is hit-or-miss — the model often ignores it and continues its current behavior. For hard requirements, use `{type: "say"}` instead.
 - **`endedReason: "assistant-ended-call-after-message-spoken"`** is what you see when `endCallAfterSpokenEnabled` triggers.
+- **Vapi's native `schedulePlan.earliestAt` has multi-minute lead time** on tight schedules (empirically 5+ min for "in 1 minute" requests stuck in `scheduled` state). For sub-10-minute delays, schedule via QStash and dial Vapi immediately when the time arrives.
 
 ### Prompt construction
 
@@ -265,17 +304,20 @@ Recorded so future iterations don't relearn these the hard way.
 
 - **Vapi assistant pre-config:** Vapi's `firstMessageMode: assistant-speaks-first` with empty `firstMessage` causes the assistant to wait silently. Use `assistant-speaks-first-with-model-generated-message` to have the model generate the first turn from the system prompt.
 - **`schedule_callback`'s `customerNumber` argument is unreliable.** The model passes the literal `"{{customerNumber}}"` placeholder string, or no value, or a malformed phone. Server takes `customerNumber` from `message.call.customer.number` (guaranteed E.164) and ignores the model's value.
+- **The model picks the wrong scheduling tool at end of session.** Despite tool descriptions explicitly disambiguating `schedule_callback` (for "I can't talk now" only) and `schedule_next_session` (for end-of-session next-session scheduling), the model picks `schedule_callback` for short delays like "in one minute" because the pattern feels callback-shaped. Server-side intercept (`inWrapUpPhaseForCallId`) compensates by reassigning the function name when invoked in wrap-up phase.
+- **The model invokes `schedule_next_session` prematurely** with its own clarifying question as the `suggestedTime` argument when the participant declines the default. Tool description explicitly forbids this. Server has a parse-failure fallback to "in three days at this same time" so a real follow-up call gets queued either way.
 
 ## Resolved Decisions
 
 - **Single Render service** for MVP. Don't split into orchestrator + summariser.
 - **Participant names will be used.** `PARTICIPANT_NAME` is a runtime variable. Eric addresses the participant by name when available.
 - **Database: Supabase free tier.** Schema as above. RLS enabled with no policies.
-- **Server-side prompt assembly per call** for opening-flow routing, not model-side conditional logic.
-- **Three-stage close-out** (soft → force-say → hard cap) instead of a single force action.
-- **QStash short-fuse routing** for callbacks under threshold; Vapi schedulePlan for longer.
-- **`schedule_callback` is a reusable Vapi tool** (in dashboard Tools list), referenced by `toolIds` on the assistant.
+- **Per-call server-side prompt assembly** strips all opening flow blocks that don't match the active session/IS_CALLBACK combination. Also strips `screening_logic` for Sessions 2 and 3.
+- **Three-stage close-out** (soft signal queued → speech-update triggers say → force-close fallback → hard cap). Soft signal waits for participant-stop before speaking. Session 3 uses a final-farewell variant with `endCallAfterSpoken:true`.
+- **QStash short-fuse routing** for any callback/next-session under `QSTASH_CALLBACK_THRESHOLD_MINUTES` (default 10); Vapi schedulePlan for longer.
+- **Both scheduling tools are reusable Vapi tools** (`schedule_callback` + `schedule_next_session`), referenced by `toolIds` on the assistant.
 - **Tool result text is spoken by Vapi via `request-complete` + `endCallAfterSpoken`**, not by the model.
+- **Server-side intercept** redirects misrouted `schedule_callback` invocations during wrap-up to `schedule_next_session`.
 
 ## Iteration History — Lessons Learned (Don't Repeat These)
 
@@ -285,18 +327,19 @@ Recorded so future iterations don't relearn these the hard way.
 - **Anchor regex to top-level tags when stripping prompt blocks.** Both opening flows reference each other's tag names in their prose. Unanchored regex catastrophically eats the wrong block.
 - **The model unreliably honors mid-conversation system messages.** Don't rely on inject-and-comply for hard requirements (wrap-ups, end-call). Use Vapi's `{type:"say"}` to bypass the model.
 - **Soft signal → force-say staging beats single force action.** Single force-say barges in mid-question. Two-stage gives Eric a chance to wrap up at the next natural turn boundary, with force as fail-safe.
+- **Queue-then-speak-on-user-stop is more reliable than fire-and-pray timing.** Vapi's `speech-update` event with `role=user, status=stopped` is the right turn-boundary signal. Pure timing-based wrap-up cuts off the participant mid-answer.
+- **Trust the server to correct model tool-selection errors.** Don't expect prompt/description tweaks to perfectly bias the model between similar tools. The model picks the wrong one often enough that a server-side intercept (e.g., `inWrapUpPhaseForCallId`) is more robust than yet another description revision.
+- **Don't let the model parse times.** Eric will sometimes invoke `schedule_next_session` with a question or vague phrase as `suggestedTime`. Server-side parser failure must have a default-fallback (3 days), not silent failure — otherwise no callback gets scheduled and the participant never hears back.
 - **Strengthened milestones produce depth at cost of naturalness when participants are guarded.** Real-participant data still needed to validate.
 - **The 43/45-minute pattern came from rejecting "abrupt hang-up at 45 minutes" in favour of "soft warning then fail-safe." Now staged into three.**
 - **Earlier "Session 2 detection worked" reports were misleading** — appeared to work because of fallback paths in the prompt, not because the summary was actually being read by Eric. Use diagnostic markers to distinguish "appears to work" from "is verifiably working."
 
 ## Phase 2 and Phase 3 Work (Deferred)
 
-**Phase 2** — Add Sessions 2 and 3 with manual summarisation:
-- Manually populate `sessions.prior_sessions_context` for testing (a human reads the call transcript and writes a summary)
-- Add per-participant cross-session scheduling (Session 2 N days after Session 1 completes, Session 3 M days after Session 2)
-- Skip screening flow on Sessions 2 and 3 (already wired in prompt; needs server side)
-- Branch the closing line in `server.js` on ACTIVE_SESSION (currently hardcoded to Session 1)
-- Validate session_2 and session_3 opening protocols on real callbacks
+**Phase 2** — Wire up real summarisation and broader testing:
+- Manually populate `sessions.prior_sessions_context` for testing (a human reads the call transcript and writes a summary). Currently it's always empty, so Sessions 2 and 3 work structurally but Eric has no actual prior content to bridge from.
+- Add cross-call scheduling validation (Sessions 1 → 2 → 3 with real day-gap delays, not minute-gap testing)
+- Real-participant testing with the strengthened milestones at full 45-min duration
 
 **Phase 3** — Automated summarisation pipeline:
 - LLM-based summary generation (Anthropic API call) triggered after each call ends
@@ -308,10 +351,12 @@ Recorded so future iterations don't relearn these the hard way.
 
 1. **Validate real-participant probing depth on a full 45-min call.** Short test calls (3-min) showed Eric being less probing than in sim. Likely artifact of time pressure + token budget; user has set `maxTokens=250`, `temperature=0.4` to match sim. Pending test result.
 2. **If probing is still thin at 45 min**, the next suspects are the latency tweaks (`startSpeakingPlan.waitSeconds: 0.3`, `transcriber.maxDelay: 500`) — they were lowered for snappier conversation but may be reducing model deliberation time. Consider partial revert toward 0.5-0.8s.
-3. **Vapi's "No result returned" error** appears in transcripts intermittently. Cause unknown; not prompt-fixable. Investigate Vapi-side.
-4. **Stale QStash messages from prior server runs** occasionally fire and hit the timing handlers with dead callIds. Skipped silently via `timersScheduledForCallId` in-memory check. Annoying log noise but harmless.
-5. **Screening question priming.** Eric still occasionally improvises eligibility checks beyond `SCREENING_QUESTIONS_JSON` if the role/study_context blocks describe the target population. The role has been sanitized; `study_context` could also be sanitized if needed.
-6. **Phase 2 / Phase 3 work** queued.
+3. **PRIOR_SESSIONS_CONTEXT is always empty.** Sessions 2 and 3 run the right opening protocols but with no actual prior-session content to bridge from. Eric occasionally hallucinates plausible-sounding prior content. Phase 2/3 work to populate this with real summaries.
+4. **Vapi's "No result returned" error** appears in transcripts intermittently. Cause unknown; not prompt-fixable. Investigate Vapi-side.
+5. **Stale QStash messages from prior server runs** occasionally fire and hit the timing handlers with dead callIds. Skipped silently via the in-memory tracking sets. Harmless log noise.
+6. **Screening question priming.** Eric still occasionally improvises eligibility checks beyond `SCREENING_QUESTIONS_JSON` if the role/study_context blocks describe the target population. The role has been sanitized; `study_context` could also be sanitized if needed.
+7. **Transcription accuracy** can drop on quiet/short answers (Deepgram flux-general-en). Has been observed transcribing innocuous answers as "Hang up", causing Eric to obey and end the call early. Worth re-evaluating transcriber config.
+8. **Phase 2 / Phase 3 work** queued.
 
 ## Testing Approach
 
