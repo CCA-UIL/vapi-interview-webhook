@@ -788,17 +788,31 @@ app.post("/vapi", async (req, res) => {
 
         const customerNumber = message?.call?.customer?.number;
         const timezone = inferTimezone(customerNumber);
-        const parsed = parseSuggestedTimeToLocalDate({
+        let parsed = parseSuggestedTimeToLocalDate({
           suggestedTimeText: suggestedTime,
           timezone
         });
         if (!parsed) {
-          return res.json({
-            results: [{
-              toolCallId: toolCall.toolCallId || toolCall.id,
-              result: "Could not parse suggested time"
-            }]
+          // The model sometimes invokes this tool prematurely with a
+          // question or vague phrase as suggestedTime (e.g.,
+          // "a different time that works for you"). Rather than failing
+          // silently — which leaves the participant with no future call
+          // and a confusing closing — fall back to the 3-day default.
+          // This is a recovery path; the tool description and force-say
+          // wording should still discourage premature invocation.
+          console.warn("schedule_next_session: suggestedTime unparseable, falling back to 3-day default", { suggestedTime });
+          parsed = parseSuggestedTimeToLocalDate({
+            suggestedTimeText: "in three days at this same time",
+            timezone
           });
+          if (!parsed) {
+            return res.json({
+              results: [{
+                toolCallId: toolCall.toolCallId || toolCall.id,
+                result: "Could not parse suggested time and fallback failed"
+              }]
+            });
+          }
         }
         const { targetLocal, localNow, nowUtc } = parsed;
         const offsetMs = localNow.getTime() - nowUtc.getTime();

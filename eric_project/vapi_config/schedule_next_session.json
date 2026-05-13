@@ -3,13 +3,13 @@
   "async": false,
   "function": {
     "name": "schedule_next_session",
-    "description": "Schedule the next session of the three-session study. Use this at the end of the current session to schedule the participant's NEXT session, regardless of how short or long the delay is (a minute, three days, two weeks all use this tool). Do NOT use schedule_callback for scheduling subsequent sessions.",
+    "description": "Schedule the next session of the three-session study. Use at the end of the current session to schedule the participant NEXT session. Works for any delay (a minute, three days, two weeks). Do NOT use schedule_callback for next-session scheduling. CRITICAL: Only invoke this tool once you have heard a CONCRETE time from the participant (examples of concrete times: 'in three days', 'next Tuesday at 2pm', 'tomorrow morning', 'in one minute'). If the participant declines your proposed time but has not yet stated a specific alternative, ASK them 'What time would work better?' and WAIT for their concrete answer before invoking this tool. Never invoke this tool with a question, open-ended phrase, or vague phrase like 'another time' as the suggestedTime argument.",
     "parameters": {
       "type": "object",
       "properties": {
         "suggestedTime": {
           "type": "string",
-          "description": "Natural language time for the next session."
+          "description": "Concrete natural-language time from the participant. Must be a specific time, not a question or vague placeholder."
         }
       },
       "required": [
