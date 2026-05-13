@@ -357,7 +357,7 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
     await qstashScheduleAt({
       url: `${RENDER_BASE_URL}/timing/fire-callback`,
       notBeforeSeconds: Math.floor(earliestMs / 1000),
-      body: { assistantId, customerNumber, variableValues: callbackVars }
+      body: { assistantId, customerNumber, variableValues: callbackVars, isCallback: true }
     });
     console.log("Short-fuse callback queued via QStash", {
       customerNumber, earliestAtIso, delayMinutes: delayMinutes.toFixed(2)
@@ -581,17 +581,25 @@ app.post("/vapi", async (req, res) => {
           `Thank you so much for everything you've shared today. ` +
           `Take care until then.`;
 
-        // Soft signal: force Eric to SAY the scheduling question verbatim
-        // via Vapi's say action. The /timing/wrap-up handler stores this
-        // text and waits for the next "user stopped speaking" event before
-        // actually firing the say — so we never barge into the participant's
-        // pending response to Eric's last interview question.
+        // Soft signal: force Eric to SAY this verbatim via Vapi's say
+        // action. The /timing/wrap-up handler stores this text and waits
+        // for the next "user stopped speaking" event before actually firing
+        // the say — so we never barge into the participant's pending
+        // response to Eric's last interview question.
         //
-        // Question is a yes/no on the 3-day default. If the participant
-        // says no, Eric's natural follow-up will ask for a specific time
-        // (vs an open-ended "or another time" which previously got vague
-        // "any time" answers Eric just accepted).
+        // Includes the "wraps up + thanks" transition before the scheduling
+        // proposal, so the closing happens in the right order: end-of-
+        // interview signal first, scheduling question second. The
+        // schedule_next_session tool's request-complete then closes with
+        // just the confirmation + farewell, no transition.
+        //
+        // The scheduling question is yes/no on the 3-day default. If the
+        // participant says no, Eric's natural follow-up will ask for a
+        // specific time (vs an open-ended "or another time" which
+        // previously got vague answers Eric just accepted).
         const softWrapupContent =
+          `Well, that wraps up our interview for today. ` +
+          `Thank you so much for everything you've shared. ` +
           `Before we go, I'd like to schedule our next conversation. ` +
           `Would three days from now at this same time work for you?`;
 
@@ -767,16 +775,41 @@ app.post("/vapi", async (req, res) => {
           participantName
         });
 
-        const scheduled = await vapiPost("/call", {
-          assistantId: assistantIdForNext,
-          phoneNumberId: PHONE_NUMBER_ID,
-          customer: { number: customerNumber },
-          schedulePlan: { earliestAt: utcTarget.toISOString() },
-          assistantOverrides: {
-            variableValues: nextSessionVars,
-            model: await buildModelOverride({ isCallback: false })
-          }
-        });
+        // Short-fuse routing: for delays under the threshold, schedule via
+        // QStash and dial Vapi immediately when the time arrives. Same
+        // pattern as scheduleVapiCallback — avoids Vapi's native scheduler
+        // lead-time problem that leaves "in one minute" calls stuck in
+        // scheduled state for many minutes. Long-fuse delays still use
+        // Vapi's schedulePlan.
+        const delayMinutes = (utcTarget.getTime() - Date.now()) / 60000;
+        let scheduled = null;
+        if (delayMinutes < QSTASH_CALLBACK_THRESHOLD_MINUTES && QSTASH_TOKEN && RENDER_BASE_URL) {
+          await qstashScheduleAt({
+            url: `${RENDER_BASE_URL}/timing/fire-callback`,
+            notBeforeSeconds: Math.floor(utcTarget.getTime() / 1000),
+            body: {
+              assistantId: assistantIdForNext,
+              customerNumber,
+              variableValues: nextSessionVars,
+              isCallback: false
+            }
+          });
+          scheduled = { id: null, status: "qstash-scheduled" };
+          console.log("Short-fuse next-session call queued via QStash", {
+            customerNumber, earliestAt: utcTarget.toISOString(), delayMinutes: delayMinutes.toFixed(2)
+          });
+        } else {
+          scheduled = await vapiPost("/call", {
+            assistantId: assistantIdForNext,
+            phoneNumberId: PHONE_NUMBER_ID,
+            customer: { number: customerNumber },
+            schedulePlan: { earliestAt: utcTarget.toISOString() },
+            assistantOverrides: {
+              variableValues: nextSessionVars,
+              model: await buildModelOverride({ isCallback: false })
+            }
+          });
+        }
 
         console.log("Next session scheduled", {
           fromSession: currentSession,
@@ -940,20 +973,25 @@ app.post("/timing/force-close", async (req, res) => {
  */
 app.post("/timing/fire-callback", async (req, res) => {
   try {
-    const { assistantId, customerNumber, variableValues } = req.body || {};
+    const { assistantId, customerNumber, variableValues, isCallback = true } = req.body || {};
     if (!assistantId || !customerNumber) {
       return res.status(400).json({ error: "Missing assistantId or customerNumber" });
     }
+    // isCallback controls which opening flow is included in the assembled
+    // prompt. true = session_1_callback_flow (brief reidentification; used
+    // by schedule_callback's short-fuse path). false = the regular opening
+    // flow for the active session (used by schedule_next_session for
+    // Sessions 2 and 3, which are first contact for that session).
     const result = await vapiPost("/call", {
       assistantId,
       phoneNumberId: PHONE_NUMBER_ID,
       customer: { number: customerNumber },
       assistantOverrides: {
         variableValues,
-        model: await buildModelOverride({ isCallback: true })
+        model: await buildModelOverride({ isCallback })
       }
     });
-    console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber });
+    console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber, isCallback });
     return res.json({ ok: true, vapiCallId: result?.id });
   } catch (e) {
     console.error("/timing/fire-callback error:", e);
