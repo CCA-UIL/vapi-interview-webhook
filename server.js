@@ -281,24 +281,44 @@ const PROMPT_PATH = path.join(
   "Eric_system_prompt_phase1.xml"
 );
 
-function loadPromptForCall({ isCallback }) {
+function loadPromptForCall({ isCallback, activeSession = 1 }) {
   let prompt = fs.readFileSync(PROMPT_PATH, "utf8");
-  // The regex must anchor to top-level tags (column 0) — both flow blocks
-  // contain inline prose references to the *other* flow's tag name (e.g.,
-  // session_1_initial_call_flow's description mentions "use
-  // <session_1_callback_flow>"), and an unanchored regex would lazily
-  // match from that inline mention through the end of the actual block,
-  // wiping most of the wrong block.
-  if (isCallback) {
+  // Regex must anchor to top-level tags (column 0). Both flow blocks
+  // contain inline prose references to other flows' tag names (e.g.,
+  // session_1_initial_call_flow's description mentions
+  // "<session_1_callback_flow>"), and an unanchored regex would lazily
+  // match from those inline mentions through the end of the actual block,
+  // wiping content unintentionally.
+  const stripBlock = (tag, reason) => {
+    const re = new RegExp(`^<${tag}>[\\s\\S]*?^</${tag}>$`, "m");
     prompt = prompt.replace(
-      /^<session_1_initial_call_flow>[\s\S]*?^<\/session_1_initial_call_flow>$/m,
-      "<session_1_initial_call_flow>(omitted: this call is a callback, so the initial flow does not apply)</session_1_initial_call_flow>"
+      re,
+      `<${tag}>(omitted: ${reason})</${tag}>`
     );
-  } else {
-    prompt = prompt.replace(
-      /^<session_1_callback_flow>[\s\S]*?^<\/session_1_callback_flow>$/m,
-      "<session_1_callback_flow>(omitted: this call is not a callback)</session_1_callback_flow>"
-    );
+  };
+
+  if (activeSession === 1) {
+    // Session 1: choose initial vs callback based on IS_CALLBACK.
+    if (isCallback) {
+      stripBlock("session_1_initial_call_flow", "this call is a Session 1 callback");
+    } else {
+      stripBlock("session_1_callback_flow", "this call is the initial Session 1 contact");
+    }
+    // Session 2 and 3 opening protocols are not used in Session 1.
+    stripBlock("session_2_opening_protocol", "this is Session 1");
+    stripBlock("session_3_opening_protocol", "this is Session 1");
+  } else if (activeSession === 2) {
+    // Session 2: strip both Session 1 flows and Session 3 protocol.
+    // Also strip screening_logic — Sessions 2/3 skip screening per design.
+    stripBlock("session_1_initial_call_flow", "this is Session 2, not Session 1");
+    stripBlock("session_1_callback_flow", "this is Session 2, not Session 1");
+    stripBlock("session_3_opening_protocol", "this is Session 2, not Session 3");
+    stripBlock("screening_logic", "Sessions 2 and 3 skip screening");
+  } else if (activeSession === 3) {
+    stripBlock("session_1_initial_call_flow", "this is Session 3");
+    stripBlock("session_1_callback_flow", "this is Session 3");
+    stripBlock("session_2_opening_protocol", "this is Session 3, not Session 2");
+    stripBlock("screening_logic", "Sessions 2 and 3 skip screening");
   }
   return prompt;
 }
@@ -325,23 +345,24 @@ async function getModelTemplate() {
   return cachedModelTemplate;
 }
 
-async function buildModelOverride({ isCallback }) {
+async function buildModelOverride({ isCallback, activeSession = 1 }) {
   const template = await getModelTemplate();
   return {
     ...template,
-    messages: [{ role: "system", content: loadPromptForCall({ isCallback }) }]
+    messages: [{ role: "system", content: loadPromptForCall({ isCallback, activeSession }) }]
   };
 }
 
 async function startVapiCall({ assistantId, customerNumber, variableValues }) {
   const isCallback = variableValues?.IS_CALLBACK === "true";
+  const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
     customer: { number: customerNumber },
     assistantOverrides: {
       variableValues,
-      model: await buildModelOverride({ isCallback })
+      model: await buildModelOverride({ isCallback, activeSession })
     }
   });
 }
@@ -380,7 +401,9 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
     schedulePlan: { earliestAt: earliestAtIso },
     assistantOverrides: {
       variableValues: callbackVars,
-      model: await buildModelOverride({ isCallback: true })
+      // schedule_callback is a Session 1 callback (IS_CALLBACK=true), so
+      // activeSession stays 1.
+      model: await buildModelOverride({ isCallback: true, activeSession: 1 })
     }
   });
 }
@@ -826,7 +849,7 @@ app.post("/vapi", async (req, res) => {
             schedulePlan: { earliestAt: utcTarget.toISOString() },
             assistantOverrides: {
               variableValues: nextSessionVars,
-              model: await buildModelOverride({ isCallback: false })
+              model: await buildModelOverride({ isCallback: false, activeSession: nextSession })
             }
           });
         }
@@ -1001,21 +1024,20 @@ app.post("/timing/fire-callback", async (req, res) => {
     if (!assistantId || !customerNumber) {
       return res.status(400).json({ error: "Missing assistantId or customerNumber" });
     }
-    // isCallback controls which opening flow is included in the assembled
-    // prompt. true = session_1_callback_flow (brief reidentification; used
-    // by schedule_callback's short-fuse path). false = the regular opening
-    // flow for the active session (used by schedule_next_session for
-    // Sessions 2 and 3, which are first contact for that session).
+    // isCallback controls Session 1 initial-vs-callback choice; activeSession
+    // controls which session's opening protocol is kept in the assembled
+    // prompt (and strips all the others).
+    const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
     const result = await vapiPost("/call", {
       assistantId,
       phoneNumberId: PHONE_NUMBER_ID,
       customer: { number: customerNumber },
       assistantOverrides: {
         variableValues,
-        model: await buildModelOverride({ isCallback })
+        model: await buildModelOverride({ isCallback, activeSession })
       }
     });
-    console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber, isCallback });
+    console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber, isCallback, activeSession });
     return res.json({ ok: true, vapiCallId: result?.id });
   } catch (e) {
     console.error("/timing/fire-callback error:", e);
