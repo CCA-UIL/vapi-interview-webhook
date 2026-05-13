@@ -166,6 +166,11 @@ function wasScheduled(key) {
 
 const timersScheduledForCallId = new Set();
 
+// Wrap-up signals queued, waiting for the participant to finish their current
+// turn before being spoken. Keyed by callId. Cleared once spoken or when the
+// call ends.
+const pendingWrapUpByCallId = new Map();
+
 // =============================================================================
 // Supabase data layer
 // =============================================================================
@@ -540,6 +545,7 @@ app.post("/vapi", async (req, res) => {
 
       if (status === "ended" && callId) {
         timersScheduledForCallId.delete(callId);
+        pendingWrapUpByCallId.delete(callId);
         await updateSessionByCallId(callId, {
           status: "completed",
           completed_at: new Date().toISOString()
@@ -576,15 +582,18 @@ app.post("/vapi", async (req, res) => {
           `Take care until then.`;
 
         // Soft signal: force Eric to SAY the scheduling question verbatim
-        // via Vapi's say action. Bypasses the model's tendency to ignore
-        // system-message wrap-up directives. After the say, the participant
-        // responds in a normal turn, and the model is much more reliable
-        // at invoking schedule_next_session in response to a natural Q->A
-        // exchange than at responding to a mid-conversation system message.
+        // via Vapi's say action. The /timing/wrap-up handler stores this
+        // text and waits for the next "user stopped speaking" event before
+        // actually firing the say — so we never barge into the participant's
+        // pending response to Eric's last interview question.
+        //
+        // Question is a yes/no on the 3-day default. If the participant
+        // says no, Eric's natural follow-up will ask for a specific time
+        // (vs an open-ended "or another time" which previously got vague
+        // "any time" answers Eric just accepted).
         const softWrapupContent =
           `Before we go, I'd like to schedule our next conversation. ` +
-          `I was thinking three days from now at this same time. ` +
-          `Does that work for you, or would another time be better?`;
+          `Would three days from now at this same time work for you?`;
 
         try {
           if (controlUrl && RENDER_BASE_URL && QSTASH_TOKEN) {
@@ -612,6 +621,32 @@ app.post("/vapi", async (req, res) => {
         }
       }
 
+      return res.json({ ok: true });
+    }
+
+    // speech-update lets us defer the wrap-up scheduling question until
+    // the participant has actually finished responding to whatever Eric
+    // last asked. We listen for role=user, status=stopped; if there is a
+    // queued wrap-up for this call, fire it now.
+    if (type === "speech-update") {
+      const role = message?.role;
+      const speechStatus = message?.status;
+      const callId = message?.call?.id;
+      if (role === "user" && speechStatus === "stopped" && callId && pendingWrapUpByCallId.has(callId)) {
+        const { controlUrl, content } = pendingWrapUpByCallId.get(callId);
+        pendingWrapUpByCallId.delete(callId);
+        try {
+          await forceSpeakViaControlUrl({
+            controlUrl,
+            content,
+            endCallAfterSpoken: false,
+            interruptAssistantEnabled: false
+          });
+          console.log("Wrap-up scheduling question spoken after user-stop", { callId });
+        } catch (e) {
+          console.error("Failed to speak queued wrap-up:", e);
+        }
+      }
       return res.json({ ok: true });
     }
 
@@ -858,21 +893,15 @@ app.post("/timing/wrap-up", async (req, res) => {
       console.log("Skipping wrap-up: call already ended", { callId });
       return res.json({ ok: true, skipped: true });
     }
-    // Force Eric to SAY the scheduling question verbatim (no auto-end —
-    // the conversation continues so the participant can answer and Eric
-    // can invoke schedule_next_session). interruptAssistantEnabled=false
-    // makes Vapi wait for Eric to finish his current speech before doing
-    // the say, instead of barging in mid-question. System-message
-    // wrap-up signals were unreliable; a natural Q->A turn is far more
-    // likely to trigger the tool call.
-    await forceSpeakViaControlUrl({
-      controlUrl,
-      content,
-      endCallAfterSpoken: false,
-      interruptAssistantEnabled: false
-    });
-    console.log("Soft wrap-up scheduling question forced", { callId });
-    return res.json({ ok: true });
+    // Queue the scheduling question. It will be force-spoken when the next
+    // speech-update arrives with role=user, status=stopped — i.e. when the
+    // participant finishes their next turn. Avoids speaking it while the
+    // participant is still expected to answer Eric's pending question.
+    // If no user-stop arrives before /timing/force-close fires, the
+    // force-close path takes over and speaks the closing line instead.
+    pendingWrapUpByCallId.set(callId, { controlUrl, content, queuedAt: Date.now() });
+    console.log("Wrap-up scheduling question queued (waiting for user-stop)", { callId });
+    return res.json({ ok: true, queued: true });
   } catch (e) {
     console.error("/timing/wrap-up error", e);
     return res.status(500).json({ ok: false });
