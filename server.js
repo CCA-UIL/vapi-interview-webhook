@@ -171,6 +171,13 @@ const timersScheduledForCallId = new Set();
 // call ends.
 const pendingWrapUpByCallId = new Map();
 
+// Calls that have entered (or passed) the wrap-up phase. Used to redirect
+// schedule_callback invocations that happen in the closing window — the model
+// stubbornly picks schedule_callback over schedule_next_session for
+// short-fuse times like "in one minute" no matter how clear the tool
+// descriptions are. Server-side intercept compensates.
+const inWrapUpPhaseForCallId = new Set();
+
 // =============================================================================
 // Supabase data layer
 // =============================================================================
@@ -546,6 +553,7 @@ app.post("/vapi", async (req, res) => {
       if (status === "ended" && callId) {
         timersScheduledForCallId.delete(callId);
         pendingWrapUpByCallId.delete(callId);
+        inWrapUpPhaseForCallId.delete(callId);
         await updateSessionByCallId(callId, {
           status: "completed",
           completed_at: new Date().toISOString()
@@ -662,6 +670,18 @@ app.post("/vapi", async (req, res) => {
       const toolCall = message.toolCallList?.[0];
       const fn = toolCall?.function;
       console.log("tool-calls:", { callId: message?.call?.id, name: fn?.name, arguments: fn?.arguments });
+
+      // Server-side intercept: the model stubbornly picks schedule_callback
+      // for short-fuse times even at end of session. If we are past the
+      // wrap-up signal, treat the schedule_callback invocation as if Eric
+      // had called schedule_next_session. The function name is reassigned
+      // below so the rest of the handler routes correctly.
+      const currentCallId = message?.call?.id;
+      if (fn?.name === "schedule_callback" && inWrapUpPhaseForCallId.has(currentCallId)) {
+        console.log("Intercepting schedule_callback in wrap-up phase; redirecting to schedule_next_session", { callId: currentCallId });
+        fn.name = "schedule_next_session";
+      }
+
       if (fn?.name === "schedule_callback") {
         const { suggestedTime } = fn.arguments || {};
         // Trust the call's customer number (always E.164) over the model's
@@ -933,6 +953,10 @@ app.post("/timing/wrap-up", async (req, res) => {
     // If no user-stop arrives before /timing/force-close fires, the
     // force-close path takes over and speaks the closing line instead.
     pendingWrapUpByCallId.set(callId, { controlUrl, content, queuedAt: Date.now() });
+    // Mark this call as in the wrap-up phase. Any schedule_callback
+    // invoked from this point on gets intercepted and redirected to the
+    // schedule_next_session flow.
+    inWrapUpPhaseForCallId.add(callId);
     console.log("Wrap-up scheduling question queued (waiting for user-stop)", { callId });
     return res.json({ ok: true, queued: true });
   } catch (e) {

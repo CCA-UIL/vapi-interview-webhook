@@ -26,7 +26,7 @@
     },
     {
       "type": "request-complete",
-      "content": "Got it. I'll call you back {{suggestedTime}}. Take care.",
+      "content": "Got it. I'll call you {{suggestedTime}}. Take care.",
       "endCallAfterSpokenEnabled": true
     }
   ]
