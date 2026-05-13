@@ -555,31 +555,24 @@ app.post("/vapi", async (req, res) => {
         const forceCloseAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000 - FORCE_CLOSE_OFFSET_SECONDS * 1000) / 1000);
         const hardCapAt = Math.floor((startMs + INTERVIEW_MAX_MINUTES * 60 * 1000) / 1000);
 
-        // Fallback closing if Eric doesn't comply with the soft signal. The
-        // force-close speaks this verbatim and hangs up — used only when Eric
-        // continues the interview past the soft signal window.
+        // Fallback closing if Eric doesn't invoke schedule_next_session.
+        // Force-close speaks this verbatim and hangs up.
         // TODO: branch on ACTIVE_SESSION when Sessions 2 and 3 are wired.
         const closingSentence =
           `Well, that wraps up today's interview session. ` +
           `Thank you so much for everything you've shared today. ` +
           `Take care until then.`;
 
-        // Soft signal directs Eric to schedule the next session before
-        // hanging up. The schedule_next_session tool's request-complete
-        // message handles the spoken confirmation + closing + auto-hangup.
+        // Soft signal: force Eric to SAY the scheduling question verbatim
+        // via Vapi's say action. Bypasses the model's tendency to ignore
+        // system-message wrap-up directives. After the say, the participant
+        // responds in a normal turn, and the model is much more reliable
+        // at invoking schedule_next_session in response to a natural Q->A
+        // exchange than at responding to a mid-conversation system message.
         const softWrapupContent =
-          `WRAP-UP SIGNAL — time is almost up. After the participant ` +
-          `finishes their NEXT response, do not ask another follow-up. ` +
-          `Briefly acknowledge their answer in three words or fewer, then ` +
-          `propose the next session with this exact phrasing: "Before we ` +
-          `go, I'd like to schedule our next conversation. I was thinking ` +
-          `three days from now at this same time. Does that work for you, ` +
-          `or would another time be better?" Wait for the participant's ` +
-          `answer. Then invoke the schedule_next_session tool with ` +
-          `suggestedTime set to either "in three days at this same time" ` +
-          `(if they accepted the default) or their stated time. Do not ` +
-          `speak again after invoking the tool — the platform will speak ` +
-          `the confirmation and end the call automatically.`;
+          `Before we go, I'd like to schedule our next conversation. ` +
+          `I was thinking three days from now at this same time. ` +
+          `Does that work for you, or would another time be better?`;
 
         try {
           if (controlUrl && RENDER_BASE_URL && QSTASH_TOKEN) {
@@ -853,11 +846,13 @@ app.post("/timing/wrap-up", async (req, res) => {
       console.log("Skipping wrap-up: call already ended", { callId });
       return res.json({ ok: true, skipped: true });
     }
-    // Soft signal: inject a system message asking Eric to wrap up after the
-    // participant's NEXT response. If Eric complies, conversation ends
-    // naturally. If he doesn't, /timing/force-close fires next as a fallback.
-    await injectSystemMessageViaControlUrl({ controlUrl, content });
-    console.log("Soft wrap-up signal injected", { callId });
+    // Force Eric to SAY the scheduling question verbatim (no auto-end —
+    // the conversation continues so the participant can answer and Eric
+    // can invoke schedule_next_session). System-message wrap-up signals
+    // were unreliable; a natural Q->A turn is far more likely to trigger
+    // the tool call.
+    await forceSpeakViaControlUrl({ controlUrl, content, endCallAfterSpoken: false });
+    console.log("Soft wrap-up scheduling question forced", { callId });
     return res.json({ ok: true });
   } catch (e) {
     console.error("/timing/wrap-up error", e);
