@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eric — Start Interview Call</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      max-width: 480px;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+      color: #1f2937;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    p.intro { color: #6b7280; margin-top: 0; margin-bottom: 1.5rem; font-size: 0.95rem; }
+    label {
+      display: block;
+      margin-top: 1rem;
+      font-weight: 500;
+      font-size: 0.9rem;
+    }
+    .hint { font-weight: 400; color: #6b7280; font-size: 0.85rem; }
+    input {
+      width: 100%;
+      padding: 0.55rem 0.7rem;
+      margin-top: 0.3rem;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 1rem;
+      font-family: inherit;
+    }
+    input:focus { outline: 2px solid #2563eb; outline-offset: -1px; border-color: transparent; }
+    button {
+      width: 100%;
+      margin-top: 1.5rem;
+      padding: 0.7rem;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    button:not(:disabled):hover { background: #1d4ed8; }
+    #status {
+      margin-top: 1.25rem;
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      display: none;
+      white-space: pre-wrap;
+    }
+    #status.ok { background: #d1fae5; color: #065f46; display: block; }
+    #status.err { background: #fee2e2; color: #991b1b; display: block; }
+    #status.info { background: #dbeafe; color: #1e40af; display: block; }
+  </style>
+</head>
+<body>
+  <h1>Start an interview call</h1>
+  <p class="intro">Dial an outbound call to a participant. Eric will introduce himself, run screening, and conduct Session 1.</p>
+
+  <form id="call-form">
+    <label>
+      Participant phone number
+      <span class="hint">(international format, with country code, e.g. <code>+254712345678</code>)</span>
+      <input type="tel" id="phone" required placeholder="+12025550100" autocomplete="off">
+    </label>
+
+    <label>
+      Participant name <span class="hint">(optional)</span>
+      <input type="text" id="name" placeholder="e.g. Janet" autocomplete="off">
+    </label>
+
+    <label>
+      API key
+      <span class="hint">(provided to you separately; saved in this browser)</span>
+      <input type="password" id="apikey" required autocomplete="off">
+    </label>
+
+    <button type="submit" id="submit-btn">Start call</button>
+  </form>
+
+  <div id="status"></div>
+
+  <script>
+    const form = document.getElementById('call-form');
+    const phoneEl = document.getElementById('phone');
+    const nameEl = document.getElementById('name');
+    const apikeyEl = document.getElementById('apikey');
+    const statusEl = document.getElementById('status');
+    const submitBtn = document.getElementById('submit-btn');
+
+    // Restore API key from this browser's local storage so the user
+    // doesn't have to retype it every time.
+    apikeyEl.value = localStorage.getItem('eric_api_key') || '';
+
+    function setStatus(kind, text) {
+      statusEl.className = kind;
+      statusEl.textContent = text;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const phone = phoneEl.value.trim();
+      const name = nameEl.value.trim();
+      const apikey = apikeyEl.value.trim();
+
+      if (!phone.startsWith('+')) {
+        setStatus('err', 'Phone number must start with + and include the country code (e.g. +254712345678).');
+        return;
+      }
+
+      localStorage.setItem('eric_api_key', apikey);
+      submitBtn.disabled = true;
+      setStatus('info', 'Dialling...');
+
+      try {
+        const resp = await fetch('/start-call', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': apikey
+          },
+          body: JSON.stringify({ customerNumber: phone, name })
+        });
+        const data = await resp.json();
+
+        if (resp.ok && data.ok) {
+          setStatus('ok',
+            'Call queued.\n\n' +
+            'Call ID: ' + (data.callId || '(none)') + '\n' +
+            'Status: ' + (data.status || '(none)') + '\n\n' +
+            'The phone will ring within ~30 seconds.'
+          );
+          form.reset();
+          apikeyEl.value = apikey; // keep API key visible
+        } else if (resp.status === 401) {
+          setStatus('err', 'Unauthorized — the API key is missing or incorrect.');
+        } else {
+          setStatus('err',
+            'Server returned an error (HTTP ' + resp.status + '):\n' +
+            (data.error || JSON.stringify(data, null, 2))
+          );
+        }
+      } catch (err) {
+        setStatus('err', 'Network error: ' + err.message);
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

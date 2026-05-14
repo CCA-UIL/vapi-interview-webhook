@@ -320,6 +320,7 @@ Recorded so future iterations don't relearn these the hard way.
 - **Tool result text is spoken by Vapi via `request-complete` + `endCallAfterSpoken`**, not by the model.
 - **Server-side intercept** redirects misrouted `schedule_callback` invocations during wrap-up to `schedule_next_session`.
 - **Country localization is server-derived.** The server uses `libphonenumber-js` to parse the participant's phone number, maps the ISO alpha-2 country code to an English country name (lookup table for KE/NG/GH/TZ/UG/ZA/RW/ET/US/GB/CA; ISO code as fallback for unmapped countries), and passes it as the `COUNTRY` runtime variable. The prompt's `<localization>` block uses `{{COUNTRY}}` to adapt Eric's behaviour. No country-specific knowledge packs are baked in for MVP — relies on the model's training-data knowledge of country-specific English.
+- **Operator web form at `/`.** Static HTML in `public/index.html` served by the same Render service. Remote operators can trigger calls via a browser instead of curl or Postman. `/start-call` is protected by `X-API-Key` header (env var `START_CALL_API_KEY`); the form prompts for the key once and stores it in browser localStorage.
 
 ## Iteration History — Lessons Learned (Don't Repeat These)
 

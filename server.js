@@ -14,6 +14,11 @@ const app = express();
 // default 100kb limit. Bumping to 10mb to comfortably absorb that.
 app.use(express.json({ limit: "10mb" }));
 
+// Serve the operator web form (public/index.html) at the root URL. Anyone
+// with the form's URL can OPEN it; the actual /start-call submission
+// requires the X-API-Key header.
+app.use(express.static(path.join(__dirname, "public")));
+
 // =============================================================================
 // Environment
 // =============================================================================
@@ -28,6 +33,10 @@ const RENDER_BASE_URL = process.env.RENDER_BASE_URL;
 const INTERVIEW_MAX_MINUTES = parseInt(process.env.INTERVIEW_MAX_MINUTES || "45", 10);
 const SCREENING_QUESTIONS_JSON = process.env.SCREENING_QUESTIONS_JSON || "[]";
 const WRAPUP_OFFSET_MINUTES = parseInt(process.env.WRAPUP_OFFSET_MINUTES || "2", 10);
+const START_CALL_API_KEY = process.env.START_CALL_API_KEY;
+if (!START_CALL_API_KEY) {
+  console.warn("WARNING: START_CALL_API_KEY not set — /start-call is UNAUTHENTICATED. Anyone with the URL can trigger calls and burn Vapi credits.");
+}
 
 const requiredEnv = {
   VAPI_API_KEY,
@@ -557,9 +566,19 @@ function buildVariableValues({ activeSession, priorSessionsContext, isCallback, 
 /**
  * POST /start-call
  * Body: { customerNumber (req), name?, sessionNumber?=1, priorSessionsContext?, assistantId? }
+ * Headers: X-API-Key (required if START_CALL_API_KEY env var is set)
  */
 app.post("/start-call", async (req, res) => {
   try {
+    // Auth gate: only enforced when START_CALL_API_KEY is configured.
+    // If unset, the endpoint is open (a startup warning logs this).
+    if (START_CALL_API_KEY) {
+      const provided = req.header("X-API-Key");
+      if (provided !== START_CALL_API_KEY) {
+        return res.status(401).json({ error: "Unauthorized: missing or invalid X-API-Key header" });
+      }
+    }
+
     const {
       customerNumber,
       name,

@@ -18,6 +18,7 @@ In **Render dashboard → your service → Environment**, set these (mirror `.en
 | `SCREENING_QUESTIONS_JSON` | JSON array of `{id, question, pass_answer}` |
 | `SUPABASE_URL` | from Supabase → Project Settings → API → Project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | from Supabase → Project Settings → API → service_role secret |
+| `START_CALL_API_KEY` | A secret you generate (e.g. `openssl rand -hex 32`). Required for the `/start-call` endpoint when set. Share with operators who need to originate calls. |
 
 Render build/start commands (already in `package.json`):
 
@@ -48,6 +49,20 @@ The runtime variables the prompt expects (server passes these in `assistantOverr
 - `PARTICIPANT_NAME` — first name or empty string
 
 You don't need to declare these in the Vapi UI. Vapi accepts arbitrary `variableValues` at call-start.
+
+## 2b. Sharing the call-trigger with a remote operator
+
+A colleague who doesn't have access to your machine can originate calls via a simple web form at the root URL of the Render service:
+
+```
+https://vapi-interview-webhook.onrender.com/
+```
+
+Open it in any browser, fill in phone + name + API key, click "Start call". The API key is the value of `START_CALL_API_KEY` on Render — share it with the operator via a secure channel (1Password, Signal, etc.), NOT email or Slack DMs.
+
+The browser remembers the API key in localStorage so the operator only types it once per browser.
+
+If `START_CALL_API_KEY` is **not set on Render**, the form still works but the endpoint is open to anyone with the URL. Don't deploy publicly without setting it.
 
 ## 3. Calling the server
 
