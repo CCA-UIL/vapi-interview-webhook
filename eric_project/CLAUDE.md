@@ -6,7 +6,7 @@ This document is the handoff context for an AI ethnographic interviewer project.
 
 **Goal:** Build "Eric," a Vapi-based outbound voice AI that conducts ethnographic interviews with Nairobi residents who own Electric Pressure Cookers (EPCs). The research explores cultural, emotional, social, and economic dimensions of EPC adoption.
 
-**Current state (2026-05-13):** Phase 1 is built and the full Session 1 → 2 → 3 chain has been validated end-to-end on short test calls. Eric runs each session against real phone numbers with session-appropriate opening flows, screening only on Session 1, scheduling of the next session at the end of Sessions 1 and 2 (with a defensive server-side intercept for tool selection), and a final farewell with auto-hang-up at the end of Session 3. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays for both `schedule_callback` and `schedule_next_session`. Real-participant pilot with full 45-min calls is the next milestone.
+**Current state (2026-05-14):** Phase 1 is built and the full Session 1 → 2 → 3 chain has been validated end-to-end on short test calls. Eric runs each session against real phone numbers with session-appropriate opening flows, screening only on Session 1, scheduling of the next session at the end of Sessions 1 and 2 (with a defensive server-side intercept for tool selection), and a final farewell with auto-hang-up at the end of Session 3. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays for both `schedule_callback` and `schedule_next_session`. Country localization: the server infers the participant's country from their phone number (via `libphonenumber-js`) and passes it as `COUNTRY` runtime variable; the prompt's `<localization>` block adapts Eric's vocabulary, idiom, register, and cultural framing accordingly. Real-participant pilot with full 45-min calls is the next milestone.
 
 **The user's preferences (apply throughout):**
 - Direct, ruthlessly honest, no pleasantries
@@ -127,6 +127,7 @@ The prompt at `eric_project/prompts/Eric_system_prompt_phase1.xml`:
 - Top: `<active_session>{{ACTIVE_SESSION}}</active_session>` + `<is_callback>{{IS_CALLBACK}}</is_callback>` + `<opening_flow_decision>` table
 - `<prior_sessions_context>{{PRIOR_SESSIONS_CONTEXT}}</prior_sessions_context>`
 - `<role>` — sanitized of "Nairobi" / "EPC" specifics (those leaked into screening as supplemental questions)
+- `<localization>` — adapts vocabulary, idiom, code-switching, register, and cultural framing to `{{COUNTRY}}` (inferred by the server from the participant's phone number). Tells Eric to recognise local terms without asking for clarification, stay inside the participant's vocabulary, accept code-switching, and apply cultural context to probes. Falls back to neutral international English if COUNTRY is empty.
 - `<runtime_variables>` documentation
 - `<session_1_initial_call_flow>` — full intro, consent, "is now a good time", screening or callback scheduling
 - `<session_1_callback_flow>` — brief reidentification + availability check
@@ -318,6 +319,7 @@ Recorded so future iterations don't relearn these the hard way.
 - **Both scheduling tools are reusable Vapi tools** (`schedule_callback` + `schedule_next_session`), referenced by `toolIds` on the assistant.
 - **Tool result text is spoken by Vapi via `request-complete` + `endCallAfterSpoken`**, not by the model.
 - **Server-side intercept** redirects misrouted `schedule_callback` invocations during wrap-up to `schedule_next_session`.
+- **Country localization is server-derived.** The server uses `libphonenumber-js` to parse the participant's phone number, maps the ISO alpha-2 country code to an English country name (lookup table for KE/NG/GH/TZ/UG/ZA/RW/ET/US/GB/CA; ISO code as fallback for unmapped countries), and passes it as the `COUNTRY` runtime variable. The prompt's `<localization>` block uses `{{COUNTRY}}` to adapt Eric's behaviour. No country-specific knowledge packs are baked in for MVP — relies on the model's training-data knowledge of country-specific English.
 
 ## Iteration History — Lessons Learned (Don't Repeat These)
 

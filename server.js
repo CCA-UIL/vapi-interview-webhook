@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,6 +67,54 @@ function inferTimezone(number = "") {
   const codes = Object.keys(ccToTz).sort((a, b) => b.length - a.length);
   for (const c of codes) if (number.startsWith(c)) return ccToTz[c];
   return "UTC";
+}
+
+// Map ISO 3166-1 alpha-2 country codes to English country names for the
+// major African Anglophone countries we care about. For others, the
+// caller falls back to returning the ISO code itself.
+const ISO_TO_COUNTRY_NAME = {
+  KE: "Kenya",
+  NG: "Nigeria",
+  GH: "Ghana",
+  TZ: "Tanzania",
+  UG: "Uganda",
+  ZA: "South Africa",
+  RW: "Rwanda",
+  ET: "Ethiopia",
+  // Commonly-tested non-African destinations
+  US: "United States",
+  GB: "United Kingdom",
+  CA: "Canada"
+};
+
+/**
+ * Infer the participant's country from their phone number using
+ * libphonenumber-js. Returns a country name string (e.g. "Kenya") or an
+ * empty string if the number can't be parsed.
+ *
+ * Edge cases handled:
+ *  - Malformed / unparseable numbers → "" + warning logged
+ *  - Country we don't have a name mapping for → returns the ISO alpha-2
+ *    code itself (e.g. "BF") as documented MVP fallback
+ *  - VoIP / geographically-ambiguous numbers → returns whatever the
+ *    library reports; acceptable for MVP
+ */
+function inferCountryFromPhone(phoneNumber) {
+  if (!phoneNumber) {
+    console.warn("inferCountryFromPhone: empty phone number");
+    return "";
+  }
+  try {
+    const parsed = parsePhoneNumberFromString(phoneNumber);
+    if (!parsed || !parsed.country) {
+      console.warn("inferCountryFromPhone: could not parse country from number", { phoneNumber });
+      return "";
+    }
+    return ISO_TO_COUNTRY_NAME[parsed.country] || parsed.country;
+  } catch (e) {
+    console.warn("inferCountryFromPhone: parse error", { phoneNumber, error: String(e) });
+    return "";
+  }
 }
 
 const WORD_NUMBERS = {
@@ -489,14 +538,15 @@ async function qstashScheduleAt({ url, notBeforeSeconds, body }) {
   return { status: resp.status, body: text };
 }
 
-function buildVariableValues({ activeSession, priorSessionsContext, isCallback, participantName }) {
+function buildVariableValues({ activeSession, priorSessionsContext, isCallback, participantName, country }) {
   return {
     ACTIVE_SESSION: String(activeSession),
     PRIOR_SESSIONS_CONTEXT: priorSessionsContext || "",
     INTERVIEW_MAX_MINUTES: String(INTERVIEW_MAX_MINUTES),
     IS_CALLBACK: isCallback ? "true" : "false",
     SCREENING_QUESTIONS_JSON,
-    PARTICIPANT_NAME: participantName || ""
+    PARTICIPANT_NAME: participantName || "",
+    COUNTRY: country || ""
   };
 }
 
@@ -534,7 +584,8 @@ app.post("/start-call", async (req, res) => {
       activeSession: sessionNumber,
       priorSessionsContext,
       isCallback: false,
-      participantName: participant.name
+      participantName: participant.name,
+      country: inferCountryFromPhone(customerNumber)
     });
 
     const started = await startVapiCall({
@@ -750,7 +801,8 @@ app.post("/vapi", async (req, res) => {
             activeSession: 1,
             priorSessionsContext: "",
             isCallback: true,
-            participantName: ""
+            participantName: "",
+            country: inferCountryFromPhone(customerNumber)
           })
         });
 
@@ -843,7 +895,8 @@ app.post("/vapi", async (req, res) => {
           activeSession: nextSession,
           priorSessionsContext: "",
           isCallback: false,
-          participantName
+          participantName,
+          country: inferCountryFromPhone(customerNumber)
         });
 
         // Short-fuse routing: for delays under the threshold, schedule via
@@ -964,7 +1017,8 @@ app.post("/vapi", async (req, res) => {
                 activeSession: 1,
                 priorSessionsContext: "",
                 isCallback: true,
-                participantName: ""
+                participantName: "",
+                country: inferCountryFromPhone(customerNumber)
               })
             });
             markScheduled(callIdKey || timeKey);
