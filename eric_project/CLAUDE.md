@@ -1,12 +1,12 @@
-# CLAUDE.md — Eric Voicebot Project
+# CLAUDE.md — Imani Voicebot Project
 
 This document is the handoff context for an AI ethnographic interviewer project. It contains everything Claude Code needs to continue the work without re-litigating previous decisions.
 
 ## Project Overview
 
-**Goal:** Build "Eric," a Vapi-based outbound voice AI that conducts ethnographic interviews with Nairobi residents who own Electric Pressure Cookers (EPCs). The research explores cultural, emotional, social, and economic dimensions of EPC adoption.
+**Goal:** Build "Imani," a Vapi-based outbound voice AI that conducts ethnographic interviews with Nairobi residents who own Electric Pressure Cookers (EPCs). The research explores cultural, emotional, social, and economic dimensions of EPC adoption.
 
-**Current state (2026-05-14):** Phase 1 is built and the full Session 1 → 2 → 3 chain has been validated end-to-end on short test calls. Eric runs each session against real phone numbers with session-appropriate opening flows, screening only on Session 1, scheduling of the next session at the end of Sessions 1 and 2 (with a defensive server-side intercept for tool selection), and a final farewell with auto-hang-up at the end of Session 3. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays for both `schedule_callback` and `schedule_next_session`. Country localization: the server infers the participant's country from their phone number (via `libphonenumber-js`) and passes it as `COUNTRY` runtime variable; the prompt's `<localization>` block adapts Eric's vocabulary, idiom, register, and cultural framing accordingly. Real-participant pilot with full 45-min calls is the next milestone.
+**Current state (2026-05-14):** Phase 1 is built and the full Session 1 → 2 → 3 chain has been validated end-to-end on short test calls. Imani runs each session against real phone numbers with session-appropriate opening flows, screening only on Session 1, scheduling of the next session at the end of Sessions 1 and 2 (with a defensive server-side intercept for tool selection), and a final farewell with auto-hang-up at the end of Session 3. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays for both `schedule_callback` and `schedule_next_session`. Country localization: the server infers the participant's country from their phone number (via `libphonenumber-js`) and passes it as `COUNTRY` runtime variable; the prompt's `<localization>` block adapts Imani's vocabulary, idiom, register, and cultural framing accordingly. Real-participant pilot with full 45-min calls is the next milestone.
 
 **The user's preferences (apply throughout):**
 - Direct, ruthlessly honest, no pleasantries
@@ -33,7 +33,7 @@ The system prompt contains:
 - `<is_callback>{{IS_CALLBACK}}</is_callback>` directly below — "true" or "false", set by the server
 - `<prior_sessions_context>{{PRIOR_SESSIONS_CONTEXT}}</prior_sessions_context>` — populated by the server with summary content from previous sessions (empty for Session 1)
 
-Eric reads `<active_session>` and `<is_callback>` to pick his opening flow from a routing table in `<opening_flow_decision>` near the top of the prompt.
+Imani reads `<active_session>` and `<is_callback>` to pick her opening flow from a routing table in `<opening_flow_decision>` near the top of the prompt.
 
 ### Server-Side Prompt Assembly (Critical)
 
@@ -42,7 +42,7 @@ Eric reads `<active_session>` and `<is_callback>` to pick his opening flow from 
 **Solution:** server reads the prompt template from disk, strips the inappropriate opening flow block based on IS_CALLBACK, and sends the assembled prompt via `assistantOverrides.model.messages` on every call. The model only ever sees one opening flow.
 
 Implications:
-- The prompt template at `eric_project/prompts/Eric_system_prompt_phase1.xml` is the source of truth
+- The prompt template at `eric_project/prompts/Imani_system_prompt_phase1.xml` is the source of truth
 - The Vapi-stored prompt on the assistant is a fallback only — never used in practice
 - Prompt edits no longer require `update-assistant.ps1` — just commit + push triggers Render redeploy
 - The strip regex is line-anchored (`^<tag>...^</tag>$` with `m` flag) because both flow blocks contain inline prose mentions of each other's tag names
@@ -61,16 +61,16 @@ Several milestones have been "strengthened" with extra structure:
 Strengthened milestones: 1.3, 1.4, 4.1, 4.2, 5.3, 6.2, 6.3, 7.1, 7.3, 8.1, 9.1, 11.2, 12.1, 12.3, 13.2, 13.3, 14.3.
 Unstrengthened: 1.1, 1.2, 2.1-2.4, 3.1-3.3, 4.3, 5.1-5.2, 6.1, 7.2, 8.2, 9.2-9.3, 10.1-10.3, 13.1, 14.1-14.2.
 
-**Real-participant probing depth is still being validated.** In short test calls (3-min), Eric was observed to be less probing than in sim. May be artifact of the test cap; full 45-min test pending.
+**Real-participant probing depth is still being validated.** In short test calls (3-min), Imani was observed to be less probing than in sim. May be artifact of the test cap; full 45-min test pending.
 
 ### Other Key Prompt Blocks
 
 - `<continuity_check>` — handles participants who reject prior conversation history
-- `<post_close_behaviour>` — hard rule that after the closing line, Eric only outputs minimal acknowledgments
+- `<post_close_behaviour>` — hard rule that after the closing line, Imani only outputs minimal acknowledgments
 - `<placeholder_handling>` — never read bracketed template placeholders aloud
 - `<voice_and_manner>` — TTS-aware rules: no emojis, no markdown, no narration of internal reasoning
 - `<appliance_disambiguation_principle>` — for every cooking appliance the participant names, resolve both technology and fuel/power source
-- `<pre_probe_checklist>` — five checks Eric runs before every probe (Redundancy, Attribution, Category-listing, Deflection, Ambiguity)
+- `<pre_probe_checklist>` — five checks Imani runs before every probe (Redundancy, Attribution, Category-listing, Deflection, Ambiguity)
 - `<screening_logic>` — embeds `{{SCREENING_QUESTIONS_JSON}}` inline in the prompt body so the model sees the actual JSON questions verbatim, not just the variable name. Includes a transition sentence requirement before the first question.
 
 ## Repository Layout
@@ -92,7 +92,7 @@ vapi-interview-webhook/
     ├── CLAUDE.md                     # This file
     ├── README.md
     ├── prompts/
-    │   ├── Eric_system_prompt_phase1.xml         # PRODUCTION PROMPT, source of truth, ~158KB
+    │   ├── Imani_system_prompt_phase1.xml         # PRODUCTION PROMPT, source of truth, ~158KB
     │   ├── Eric_Interview_Orchestrator_28Apr26.xml  # Legacy orchestrator, reference only
     │   ├── Vapi_system_prompt_milestone.txt      # Original milestone prompt, reference only
     │   ├── session_1_and_2_summaries_reference.txt  # Reference summaries for Session 3 testing
@@ -123,11 +123,11 @@ vapi-interview-webhook/
 
 ### Prompt structure
 
-The prompt at `eric_project/prompts/Eric_system_prompt_phase1.xml`:
+The prompt at `eric_project/prompts/Imani_system_prompt_phase1.xml`:
 - Top: `<active_session>{{ACTIVE_SESSION}}</active_session>` + `<is_callback>{{IS_CALLBACK}}</is_callback>` + `<opening_flow_decision>` table
 - `<prior_sessions_context>{{PRIOR_SESSIONS_CONTEXT}}</prior_sessions_context>`
 - `<role>` — sanitized of "Nairobi" / "EPC" specifics (those leaked into screening as supplemental questions)
-- `<localization>` — adapts vocabulary, idiom, code-switching, register, and cultural framing to `{{COUNTRY}}` (inferred by the server from the participant's phone number). Tells Eric to recognise local terms without asking for clarification, stay inside the participant's vocabulary, accept code-switching, and apply cultural context to probes. Falls back to neutral international English if COUNTRY is empty.
+- `<localization>` — adapts vocabulary, idiom, code-switching, register, and cultural framing to `{{COUNTRY}}` (inferred by the server from the participant's phone number). Tells Imani to recognise local terms without asking for clarification, stay inside the participant's vocabulary, accept code-switching, and apply cultural context to probes. Falls back to neutral international English if COUNTRY is empty.
 - `<runtime_variables>` documentation
 - `<session_1_initial_call_flow>` — full intro, consent, "is now a good time", screening or callback scheduling
 - `<session_1_callback_flow>` — brief reidentification + availability check
@@ -146,12 +146,12 @@ The prompt at `eric_project/prompts/Eric_system_prompt_phase1.xml`:
 Configured in `server.js`'s status-update handler. Times relative to call start:
 
 - **Soft signal** at T - `WRAPUP_OFFSET_MINUTES` (default 2). QStash fires `/timing/wrap-up`, which does NOT speak immediately — it **queues** the wrap-up text in `pendingWrapUpByCallId` and marks the call in `inWrapUpPhaseForCallId`. When the next `speech-update` arrives with `role=user, status=stopped` (i.e. participant finishes their next turn), the handler force-speaks the queued text via Vapi `{type:"say"}` with `interruptAssistantEnabled:false`. This means the soft signal never barges in mid-question.
-- **Force close** at T - `FORCE_CLOSE_OFFSET_SECONDS` (default 30). If the call is still live, force-speaks the closing line and auto-hangs up. Fail-safe if Eric didn't wrap on the soft signal.
+- **Force close** at T - `FORCE_CLOSE_OFFSET_SECONDS` (default 30). If the call is still live, force-speaks the closing line and auto-hangs up. Fail-safe if Imani didn't wrap on the soft signal.
 - **Hard cap** at T = `INTERVIEW_MAX_MINUTES`. Forces `endVapiCall` via controlUrl `{type:"end-call"}`. Final fail-safe.
 
 **Branching on session:**
 
-- **Sessions 1 and 2**: soft text is *"Well, that wraps up our interview for today. Thank you so much for everything you've shared. Before we go, I'd like to schedule our next conversation. Would three days from now at this same time work for you?"* — `endCallAfterSpoken:false` (conversation continues so the participant can answer and Eric can invoke `schedule_next_session`).
+- **Sessions 1 and 2**: soft text is *"Well, that wraps up our interview for today. Thank you so much for everything you've shared. Before we go, I'd like to schedule our next conversation. Would three days from now at this same time work for you?"* — `endCallAfterSpoken:false` (conversation continues so the participant can answer and Imani can invoke `schedule_next_session`).
 - **Session 3 (final)**: soft text is *"Well, that wraps up our final interview session. Thank you so much for everything you've shared across our conversations. Take care."* — `endCallAfterSpoken:true` (Vapi auto-hangs up; no scheduling step).
 
 The server reads `ACTIVE_SESSION` from variableValues to branch.
@@ -170,7 +170,7 @@ The `/timing/fire-callback` body includes `isCallback` and `variableValues` (wit
 The model stubbornly picks `schedule_callback` over `schedule_next_session` for short-fuse times ("in one minute") at end of session, despite the tool descriptions explicitly forbidding it. Server-side compensates:
 
 - `inWrapUpPhaseForCallId` Set is populated when `/timing/wrap-up` queues the soft signal.
-- In the tool-calls handler, if Eric invokes `schedule_callback` while the call is in `inWrapUpPhaseForCallId`, the server **reassigns `fn.name = "schedule_next_session"`** before the rest of the handler runs. The Session 2/3 dial is scheduled correctly regardless of which tool the model picked.
+- In the tool-calls handler, if Imani invokes `schedule_callback` while the call is in `inWrapUpPhaseForCallId`, the server **reassigns `fn.name = "schedule_next_session"`** before the rest of the handler runs. The Session 2/3 dial is scheduled correctly regardless of which tool the model picked.
 
 If `schedule_next_session`'s `suggestedTime` argument is unparseable (the model sometimes invokes it prematurely with its own clarifying question as the argument), the server falls back to scheduling "in three days at this same time" rather than failing silently. A real follow-up call gets queued; the audio confirmation is the only thing that sounds off in that recovery case.
 
@@ -220,7 +220,7 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 | Var | Value |
 |---|---|
 | `VAPI_API_KEY` | Vapi API key |
-| `ASSISTANT_ID` | The Eric assistant ID on Vapi |
+| `ASSISTANT_ID` | The Imani assistant ID on Vapi |
 | `PHONE_NUMBER_ID` | Vapi phone number resource ID |
 | `QSTASH_TOKEN` | Upstash QStash token |
 | `RENDER_BASE_URL` | Public Render URL, e.g. `https://vapi-interview-webhook.onrender.com` |
@@ -261,7 +261,7 @@ Snapshot at `eric_project/vapi_config/schedule_next_session.json`. Used at the e
 
 ### Per-call prompt assembly
 
-The server reads `eric_project/prompts/Eric_system_prompt_phase1.xml` at call time and **strips opening flow blocks that don't match the active session/IS_CALLBACK combination** before sending the assembled prompt via `assistantOverrides.model.messages`. The model sees only the one opening flow it should use.
+The server reads `eric_project/prompts/Imani_system_prompt_phase1.xml` at call time and **strips opening flow blocks that don't match the active session/IS_CALLBACK combination** before sending the assembled prompt via `assistantOverrides.model.messages`. The model sees only the one opening flow it should use.
 
 `loadPromptForCall({ isCallback, activeSession })` in server.js handles the stripping. Sessions 2 and 3 also strip `screening_logic` (per design — they skip screening). The strip regex is line-anchored (`^<tag>...^</tag>$` with `m` flag) because both flow blocks contain inline prose mentions of other flows' tag names that would otherwise be eaten by lazy matching.
 
@@ -289,7 +289,7 @@ Recorded so future iterations don't relearn these the hard way.
 
 - **Ending a call:** `PATCH /call/:id` with `{status: "ended"}` returns 400 ("property status should not exist"). Use the call's `controlUrl` with `{type: "end-call"}` instead. The controlUrl appears in the `status-update` webhook payload at `message.call.monitor.controlUrl`.
 - **Forcing the assistant to speak:** `controlUrl` with `{type: "say", content: "...", endCallAfterSpoken: true}` makes Vapi speak the literal text and (optionally) hang up after. Bypasses the model entirely.
-- **`interruptAssistantEnabled: false` on a `say` action** makes Vapi wait for the assistant's current speech to finish before doing the say. Use this when force-speaking mid-conversation to avoid barging into the middle of Eric's question.
+- **`interruptAssistantEnabled: false` on a `say` action** makes Vapi wait for the assistant's current speech to finish before doing the say. Use this when force-speaking mid-conversation to avoid barging into the middle of Imani's question.
 - **`speech-update` webhook events** fire with `role` ∈ {`user`, `assistant`} and `status` ∈ {`started`, `stopped`}. Enabling it in `serverMessages` lets the server detect when the participant finishes their turn — used to defer wrap-up speech to a natural turn boundary.
 - **Mid-conversation system messages are unreliable.** Adding a `{role: "system"}` message via `add-message` mid-call is hit-or-miss — the model often ignores it and continues its current behavior. For hard requirements, use `{type: "say"}` instead.
 - **`endedReason: "assistant-ended-call-after-message-spoken"`** is what you see when `endCallAfterSpokenEnabled` triggers.
@@ -311,7 +311,7 @@ Recorded so future iterations don't relearn these the hard way.
 ## Resolved Decisions
 
 - **Single Render service** for MVP. Don't split into orchestrator + summariser.
-- **Participant names will be used.** `PARTICIPANT_NAME` is a runtime variable. Eric addresses the participant by name when available.
+- **Participant names will be used.** `PARTICIPANT_NAME` is a runtime variable. Imani addresses the participant by name when available.
 - **Database: Supabase free tier.** Schema as above. RLS enabled with no policies.
 - **Per-call server-side prompt assembly** strips all opening flow blocks that don't match the active session/IS_CALLBACK combination. Also strips `screening_logic` for Sessions 2 and 3.
 - **Three-stage close-out** (soft signal queued → speech-update triggers say → force-close fallback → hard cap). Soft signal waits for participant-stop before speaking. Session 3 uses a final-farewell variant with `endCallAfterSpoken:true`.
@@ -319,7 +319,7 @@ Recorded so future iterations don't relearn these the hard way.
 - **Both scheduling tools are reusable Vapi tools** (`schedule_callback` + `schedule_next_session`), referenced by `toolIds` on the assistant.
 - **Tool result text is spoken by Vapi via `request-complete` + `endCallAfterSpoken`**, not by the model.
 - **Server-side intercept** redirects misrouted `schedule_callback` invocations during wrap-up to `schedule_next_session`.
-- **Country localization is server-derived.** The server uses `libphonenumber-js` to parse the participant's phone number, maps the ISO alpha-2 country code to an English country name (lookup table for KE/NG/GH/TZ/UG/ZA/RW/ET/US/GB/CA; ISO code as fallback for unmapped countries), and passes it as the `COUNTRY` runtime variable. The prompt's `<localization>` block uses `{{COUNTRY}}` to adapt Eric's behaviour. No country-specific knowledge packs are baked in for MVP — relies on the model's training-data knowledge of country-specific English.
+- **Country localization is server-derived.** The server uses `libphonenumber-js` to parse the participant's phone number, maps the ISO alpha-2 country code to an English country name (lookup table for KE/NG/GH/TZ/UG/ZA/RW/ET/US/GB/CA; ISO code as fallback for unmapped countries), and passes it as the `COUNTRY` runtime variable. The prompt's `<localization>` block uses `{{COUNTRY}}` to adapt Imani's behaviour. No country-specific knowledge packs are baked in for MVP — relies on the model's training-data knowledge of country-specific English.
 - **Operator web form at `/`.** Static HTML in `public/index.html` served by the same Render service. Remote operators can trigger calls via a browser instead of curl or Postman. `/start-call` is protected by `X-API-Key` header (env var `START_CALL_API_KEY`); the form prompts for the key once and stores it in browser localStorage.
 
 ## Iteration History — Lessons Learned (Don't Repeat These)
@@ -329,18 +329,18 @@ Recorded so future iterations don't relearn these the hard way.
 - **Don't over-extrapolate from one diagnostic.** A test that proves one mechanism doesn't disprove others. Confirm with the user before declaring their existing code broken. (Saved as feedback memory.)
 - **Anchor regex to top-level tags when stripping prompt blocks.** Both opening flows reference each other's tag names in their prose. Unanchored regex catastrophically eats the wrong block.
 - **The model unreliably honors mid-conversation system messages.** Don't rely on inject-and-comply for hard requirements (wrap-ups, end-call). Use Vapi's `{type:"say"}` to bypass the model.
-- **Soft signal → force-say staging beats single force action.** Single force-say barges in mid-question. Two-stage gives Eric a chance to wrap up at the next natural turn boundary, with force as fail-safe.
+- **Soft signal → force-say staging beats single force action.** Single force-say barges in mid-question. Two-stage gives Imani a chance to wrap up at the next natural turn boundary, with force as fail-safe.
 - **Queue-then-speak-on-user-stop is more reliable than fire-and-pray timing.** Vapi's `speech-update` event with `role=user, status=stopped` is the right turn-boundary signal. Pure timing-based wrap-up cuts off the participant mid-answer.
 - **Trust the server to correct model tool-selection errors.** Don't expect prompt/description tweaks to perfectly bias the model between similar tools. The model picks the wrong one often enough that a server-side intercept (e.g., `inWrapUpPhaseForCallId`) is more robust than yet another description revision.
-- **Don't let the model parse times.** Eric will sometimes invoke `schedule_next_session` with a question or vague phrase as `suggestedTime`. Server-side parser failure must have a default-fallback (3 days), not silent failure — otherwise no callback gets scheduled and the participant never hears back.
+- **Don't let the model parse times.** Imani will sometimes invoke `schedule_next_session` with a question or vague phrase as `suggestedTime`. Server-side parser failure must have a default-fallback (3 days), not silent failure — otherwise no callback gets scheduled and the participant never hears back.
 - **Strengthened milestones produce depth at cost of naturalness when participants are guarded.** Real-participant data still needed to validate.
 - **The 43/45-minute pattern came from rejecting "abrupt hang-up at 45 minutes" in favour of "soft warning then fail-safe." Now staged into three.**
-- **Earlier "Session 2 detection worked" reports were misleading** — appeared to work because of fallback paths in the prompt, not because the summary was actually being read by Eric. Use diagnostic markers to distinguish "appears to work" from "is verifiably working."
+- **Earlier "Session 2 detection worked" reports were misleading** — appeared to work because of fallback paths in the prompt, not because the summary was actually being read by Imani. Use diagnostic markers to distinguish "appears to work" from "is verifiably working."
 
 ## Phase 2 and Phase 3 Work (Deferred)
 
 **Phase 2** — Wire up real summarisation and broader testing:
-- Manually populate `sessions.prior_sessions_context` for testing (a human reads the call transcript and writes a summary). Currently it's always empty, so Sessions 2 and 3 work structurally but Eric has no actual prior content to bridge from.
+- Manually populate `sessions.prior_sessions_context` for testing (a human reads the call transcript and writes a summary). Currently it's always empty, so Sessions 2 and 3 work structurally but Imani has no actual prior content to bridge from.
 - Add cross-call scheduling validation (Sessions 1 → 2 → 3 with real day-gap delays, not minute-gap testing)
 - Real-participant testing with the strengthened milestones at full 45-min duration
 
@@ -352,19 +352,19 @@ Recorded so future iterations don't relearn these the hard way.
 
 ## Current Open Issues / Punch List
 
-1. **Validate real-participant probing depth on a full 45-min call.** Short test calls (3-min) showed Eric being less probing than in sim. Likely artifact of time pressure + token budget; user has set `maxTokens=250`, `temperature=0.4` to match sim. Pending test result.
+1. **Validate real-participant probing depth on a full 45-min call.** Short test calls (3-min) showed Imani being less probing than in sim. Likely artifact of time pressure + token budget; user has set `maxTokens=250`, `temperature=0.4` to match sim. Pending test result.
 2. **If probing is still thin at 45 min**, the next suspects are the latency tweaks (`startSpeakingPlan.waitSeconds: 0.3`, `transcriber.maxDelay: 500`) — they were lowered for snappier conversation but may be reducing model deliberation time. Consider partial revert toward 0.5-0.8s.
-3. **PRIOR_SESSIONS_CONTEXT is always empty.** Sessions 2 and 3 run the right opening protocols but with no actual prior-session content to bridge from. Eric occasionally hallucinates plausible-sounding prior content. Phase 2/3 work to populate this with real summaries.
+3. **PRIOR_SESSIONS_CONTEXT is always empty.** Sessions 2 and 3 run the right opening protocols but with no actual prior-session content to bridge from. Imani occasionally hallucinates plausible-sounding prior content. Phase 2/3 work to populate this with real summaries.
 4. **Vapi's "No result returned" error** appears in transcripts intermittently. Cause unknown; not prompt-fixable. Investigate Vapi-side.
 5. **Stale QStash messages from prior server runs** occasionally fire and hit the timing handlers with dead callIds. Skipped silently via the in-memory tracking sets. Harmless log noise.
-6. **Screening question priming.** Eric still occasionally improvises eligibility checks beyond `SCREENING_QUESTIONS_JSON` if the role/study_context blocks describe the target population. The role has been sanitized; `study_context` could also be sanitized if needed.
-7. **Transcription accuracy** can drop on quiet/short answers (Deepgram flux-general-en). Has been observed transcribing innocuous answers as "Hang up", causing Eric to obey and end the call early. Worth re-evaluating transcriber config.
+6. **Screening question priming.** Imani still occasionally improvises eligibility checks beyond `SCREENING_QUESTIONS_JSON` if the role/study_context blocks describe the target population. The role has been sanitized; `study_context` could also be sanitized if needed.
+7. **Transcription accuracy** can drop on quiet/short answers (Deepgram flux-general-en). Has been observed transcribing innocuous answers as "Hang up", causing Imani to obey and end the call early. Worth re-evaluating transcriber config.
 8. **Phase 2 / Phase 3 work** queued.
 
 ## Testing Approach
 
 For prompt iteration, use the SIM personas in `eric_project/sim_prompts/`. Standard pattern:
-1. Set Vapi prompt to the Eric prompt being tested
+1. Set Vapi prompt to the Imani prompt being tested
 2. Set the SIM prompt as a separate Vapi assistant
 3. Call one assistant with the other (agent-to-agent test)
 4. Manually toggle `<active_session>` value and `<prior_sessions_context>` content for each session

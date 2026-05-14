@@ -1,10 +1,10 @@
 # Push the local prompt file to the Vapi assistant's system prompt.
 # Usage:
 #   .\scripts\update-assistant.ps1
-#   .\scripts\update-assistant.ps1 eric_project\prompts\Eric_system_prompt_phase1.xml
+#   .\scripts\update-assistant.ps1 eric_project\prompts\Imani_system_prompt_phase1.xml
 #   .\scripts\update-assistant.ps1 <prompt-file> <assistant-id>
 #
-# Defaults: prompt = eric_project\prompts\Eric_system_prompt_phase1.xml,
+# Defaults: prompt = eric_project\prompts\Imani_system_prompt_phase1.xml,
 #           assistant id = $env:ASSISTANT_ID from .env
 #
 # Uses curl.exe (ships with Windows 10+) and node.exe for JSON munging.
@@ -12,7 +12,7 @@
 
 param(
     [Parameter(Position=0)]
-    [string]$PromptFile = "eric_project\prompts\Eric_system_prompt_phase1.xml",
+    [string]$PromptFile = "eric_project\prompts\Imani_system_prompt_phase1.xml",
 
     [Parameter(Position=1)]
     [string]$AssistantId = ""

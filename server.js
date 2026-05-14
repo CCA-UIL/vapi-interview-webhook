@@ -336,7 +336,7 @@ const PROMPT_PATH = path.join(
   __dirname,
   "eric_project",
   "prompts",
-  "Eric_system_prompt_phase1.xml"
+  "Imani_system_prompt_phase1.xml"
 );
 
 function loadPromptForCall({ isCallback, activeSession = 1 }) {
@@ -662,11 +662,11 @@ app.post("/vapi", async (req, res) => {
 
         const startMs = Date.now();
         // Three-stage close-out:
-        //   soft (T - WRAPUP_OFFSET_MINUTES): system message asks Eric to
+        //   soft (T - WRAPUP_OFFSET_MINUTES): system message asks Imani to
         //       wrap after the participant's NEXT response. Lets the
         //       conversation finish its current turn naturally.
         //   force (T - FORCE_CLOSE_OFFSET_SECONDS): Vapi force-speaks
-        //       the closing line and auto-hangs up. Fail-safe if Eric
+        //       the closing line and auto-hangs up. Fail-safe if Imani
         //       didn't comply with the soft signal.
         //   hard cap (T): final fallback — endVapiCall via controlUrl.
         const FORCE_CLOSE_OFFSET_SECONDS = parseInt(process.env.FORCE_CLOSE_OFFSET_SECONDS || "30", 10);
@@ -683,7 +683,7 @@ app.post("/vapi", async (req, res) => {
         );
         const isFinalSession = currentSession >= 3;
 
-        // Fallback closing if Eric doesn't invoke schedule_next_session.
+        // Fallback closing if Imani doesn't invoke schedule_next_session.
         // Force-close speaks this verbatim and hangs up.
         const closingSentence = isFinalSession
           ? `Well, that wraps up our final interview session. ` +
@@ -692,14 +692,14 @@ app.post("/vapi", async (req, res) => {
             `Thank you so much for everything you've shared today. ` +
             `Take care until then.`;
 
-        // Soft signal: force Eric to SAY this verbatim via Vapi's say
+        // Soft signal: force Imani to SAY this verbatim via Vapi's say
         // action. The /timing/wrap-up handler stores this text and waits
         // for the next "user stopped speaking" event before actually firing
         // the say — so we never barge into the participant's pending
-        // response to Eric's last interview question.
+        // response to Imani's last interview question.
         //
         // Sessions 1 and 2: includes "wraps up + thanks" transition before
-        // a scheduling question. After participant answers, Eric invokes
+        // a scheduling question. After participant answers, Imani invokes
         // schedule_next_session and Vapi's request-complete closes the call.
         //
         // Session 3: final session, no further scheduling. Soft signal
@@ -748,7 +748,7 @@ app.post("/vapi", async (req, res) => {
     }
 
     // speech-update lets us defer the wrap-up scheduling question until
-    // the participant has actually finished responding to whatever Eric
+    // the participant has actually finished responding to whatever Imani
     // last asked. We listen for role=user, status=stopped; if there is a
     // queued wrap-up for this call, fire it now.
     if (type === "speech-update") {
@@ -780,7 +780,7 @@ app.post("/vapi", async (req, res) => {
 
       // Server-side intercept: the model stubbornly picks schedule_callback
       // for short-fuse times even at end of session. If we are past the
-      // wrap-up signal, treat the schedule_callback invocation as if Eric
+      // wrap-up signal, treat the schedule_callback invocation as if Imani
       // had called schedule_next_session. The function name is reassigned
       // below so the rest of the handler routes correctly.
       const currentCallId = message?.call?.id;
@@ -1073,7 +1073,7 @@ app.post("/timing/wrap-up", async (req, res) => {
     // Queue the wrap-up text. It will be force-spoken when the next
     // speech-update arrives with role=user, status=stopped — i.e. when the
     // participant finishes their next turn. Avoids speaking it while the
-    // participant is still expected to answer Eric's pending question.
+    // participant is still expected to answer Imani's pending question.
     //
     // endCallAfterSpoken=true means this is Session 3's final farewell:
     // Vapi will hang up automatically after speaking. For Sessions 1 and 2,
@@ -1099,7 +1099,7 @@ app.post("/timing/wrap-up", async (req, res) => {
 /**
  * POST /timing/force-close
  * QStash trigger ~30 seconds before hard cap. If the call is still live
- * at this point, Eric did not comply with the soft wrap-up signal — Vapi
+ * at this point, Imani did not comply with the soft wrap-up signal — Vapi
  * force-speaks the closing line and auto-hangs up.
  */
 app.post("/timing/force-close", async (req, res) => {

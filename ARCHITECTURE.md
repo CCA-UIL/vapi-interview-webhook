@@ -1,6 +1,6 @@
 # Architecture — Phase 1
 
-How the Eric voicebot stack fits together. Renders inline in VS Code's
+How the Imani voicebot stack fits together. Renders inline in VS Code's
 markdown preview (open this file → click the preview icon top-right).
 
 ## Components
@@ -12,7 +12,7 @@ graph TB
     SVR[Render service<br/>server.js Express app]
     SB[(Supabase<br/>participants<br/>sessions<br/>scheduled_calls)]
     V[Vapi API<br/>api.vapi.ai]
-    A[Vapi assistant 'Eric'<br/>system prompt + Sonnet 4]
+    A[Vapi assistant 'Imani'<br/>system prompt + Sonnet 4]
     Tw[Twilio<br/>internal to Vapi]
     Ph[Participant phone]
     Q[QStash / Upstash<br/>delayed webhook scheduler]
@@ -42,7 +42,7 @@ sequenceDiagram
     participant SVR as Render server
     participant SB as Supabase
     participant V as Vapi API
-    participant A as Eric assistant
+    participant A as Imani assistant
     participant Ph as Phone
     participant Q as QStash
 
@@ -74,7 +74,7 @@ sequenceDiagram
     participant Q as QStash
     participant SVR as Render server
     participant V as Vapi controlUrl
-    participant A as Eric
+    participant A as Imani
     participant Ph as Phone
     participant SB as Supabase
 
@@ -99,7 +99,7 @@ Triggered when the participant says "call me back at X" during the call.
 
 ```mermaid
 sequenceDiagram
-    participant A as Eric
+    participant A as Imani
     participant V as Vapi
     participant SVR as Render server
     participant SB as Supabase

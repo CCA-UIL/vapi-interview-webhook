@@ -9,7 +9,7 @@ In **Render dashboard → your service → Environment**, set these (mirror `.en
 | Var | Value |
 | --- | --- |
 | `VAPI_API_KEY` | from Vapi dashboard → Settings → API |
-| `ASSISTANT_ID` | the production Eric assistant ID (set in Vapi dashboard) |
+| `ASSISTANT_ID` | the production Imani assistant ID (set in Vapi dashboard) |
 | `PHONE_NUMBER_ID` | the Vapi phone number ID — currently `6c89fc63-3d8d-4eca-98e9-ff9798ac5f9c` |
 | `QSTASH_TOKEN` | from Upstash console → QStash → tokens |
 | `RENDER_BASE_URL` | the public Render URL, e.g. `https://vapi-interview-webhook.onrender.com` |
@@ -27,9 +27,9 @@ Render build/start commands (already in `package.json`):
 
 ## 2. Vapi assistant configuration
 
-In Vapi dashboard, configure the production Eric assistant:
+In Vapi dashboard, configure the production Imani assistant:
 
-- **System prompt**: paste the contents of `eric_project/prompts/Eric_system_prompt_phase1.xml`.
+- **System prompt**: paste the contents of `eric_project/prompts/Imani_system_prompt_phase1.xml`.
 - **First message**: leave empty.
 - **First message mode**: `assistant-speaks-first`.
 - **Model**: `claude-sonnet-4-20250514` (or whichever Sonnet 4.x is current), temperature `0.4`.
@@ -135,11 +135,11 @@ Run in order. Each stage gates the next.
 
 1. **End-to-end Session 1 short call.** Set `INTERVIEW_MAX_MINUTES=5`, `WRAPUP_OFFSET_MINUTES=1`. Call your own phone via `/start-call`. Verify: introduction → consent → screening → opens Phase 1, Milestone 1.1. Hang up early. Confirm the `sessions` row has `status=in_progress` then `completed`, and the transcript is persisted.
 
-2. **Callback scheduling.** Call your phone, decline ("not now, call me back in 5 minutes"). Verify Eric calls `schedule_callback`, then ends the call with the confirmation. Confirm a `scheduled_calls` row exists with `vapi_call_id` populated. Wait for the callback to fire on schedule.
+2. **Callback scheduling.** Call your phone, decline ("not now, call me back in 5 minutes"). Verify Imani calls `schedule_callback`, then ends the call with the confirmation. Confirm a `scheduled_calls` row exists with `vapi_call_id` populated. Wait for the callback to fire on schedule.
 
-3. **Wrap-up signal.** Set `INTERVIEW_MAX_MINUTES=5`, `WRAPUP_OFFSET_MINUTES=1`. Call. Stay on the line past the 4-minute mark. Verify Eric receives the wrap-up signal and runs the Session 1 close (open-ended close → closing line → endCall) before the 5-minute mark.
+3. **Wrap-up signal.** Set `INTERVIEW_MAX_MINUTES=5`, `WRAPUP_OFFSET_MINUTES=1`. Call. Stay on the line past the 4-minute mark. Verify Imani receives the wrap-up signal and runs the Session 1 close (open-ended close → closing line → endCall) before the 5-minute mark.
 
-4. **Hard cap fail-safe.** Same env values as #3. Call. Talk past the 4-minute wrap-up. Refuse to let Eric close (keep talking). Verify the call ends at the 5-minute mark via the server's `/timing/hard-cap` route. Check Render logs for "Hard cap fired".
+4. **Hard cap fail-safe.** Same env values as #3. Call. Talk past the 4-minute wrap-up. Refuse to let Imani close (keep talking). Verify the call ends at the 5-minute mark via the server's `/timing/hard-cap` route. Check Render logs for "Hard cap fired".
 
 5. **Restore production timing.** `INTERVIEW_MAX_MINUTES=45`, `WRAPUP_OFFSET_MINUTES=2`. Run a real Session 1 call to a real participant.
 
@@ -151,4 +151,4 @@ The previous server is preserved at `eric_project/server/server_28Apr2026.js`. T
 cp eric_project/server/server_28Apr2026.js server.js
 ```
 
-…and revert env vars accordingly. The Phase 1 prompt is at `eric_project/prompts/Eric_system_prompt_phase1.xml`; the previous orchestrator is at `eric_project/prompts/Eric_Interview_Orchestrator_28Apr26.xml`.
+…and revert env vars accordingly. The Phase 1 prompt is at `eric_project/prompts/Imani_system_prompt_phase1.xml`; the previous orchestrator is at `eric_project/prompts/Eric_Interview_Orchestrator_28Apr26.xml`.

@@ -1,6 +1,6 @@
-# Eric Voicebot Project
+# Imani Voicebot Project
 
-This is the working directory for the Eric ethnographic interviewer voicebot.
+This is the working directory for the Imani ethnographic interviewer voicebot.
 
 **Start here: `CLAUDE.md`** — this is the handoff document for Claude Code.
 It contains everything needed to pick up the project, including project goal,
@@ -14,7 +14,7 @@ learned.
 ├── CLAUDE.md                          # Read this first
 ├── README.md                          # This file
 ├── prompts/
-│   ├── Vapi_system_prompt_milestone.txt          # CURRENT iterated Eric (3 sessions, 14 phases, 152KB)
+│   ├── Vapi_system_prompt_milestone.txt          # CURRENT iterated Imani (3 sessions, 14 phases, 152KB)
 │   ├── Eric_Interview_Orchestrator_28Apr26.xml   # CURRENT production prompt (single-call orchestrator)
 │   └── session_1_and_2_summaries_reference.txt   # Sample summary format for Phase 3 work
 ├── sim_prompts/
@@ -31,13 +31,13 @@ learned.
 ## What's What
 
 ### `prompts/Vapi_system_prompt_milestone.txt`
-This is the most important file. It's the iterated Eric prompt covering all
+This is the most important file. It's the iterated Imani prompt covering all
 three sessions, with all the strengthening, missing_piece_checks, and probe
 quality work that's been done. Phase 1 will adapt this for production deployment
 with the screening flow integrated and Session 1 active.
 
 ### `prompts/Eric_Interview_Orchestrator_28Apr26.xml`
-The current Eric prompt running in production. Single-call architecture with
+The current Imani prompt running in production. Single-call architecture with
 timed phase transitions and screening. Reference only — this will be replaced.
 
 ### `server/server_28Apr2026.js`
@@ -49,7 +49,7 @@ do further prompt validation. Phase 1 testing should focus on real-call
 testing, not SIM testing.
 
 ### `reference/Cooking_in_Nairobi_interview_guide.docx`
-The original research interview guide that drove the design of Eric's phases
+The original research interview guide that drove the design of Imani's phases
 and milestones. Reference document.
 
 ## Next Step
