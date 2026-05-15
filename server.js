@@ -144,7 +144,27 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
   let targetLocal = new Date(localNow);
   const lower = suggestedTimeText.toLowerCase();
 
-  if (/\btomorrow\b/.test(lower)) targetLocal.setDate(targetLocal.getDate() + 1);
+  // Track whether any day-shift pattern matched. If a day-shift matched but
+  // no specific time-of-day pattern follows (e.g., "tomorrow at this same
+  // time" or "in 3 days at this same time"), fall through to a
+  // current-time-of-day return at the end.
+  let dayShifted = false;
+
+  if (/\btomorrow\b/.test(lower)) {
+    targetLocal.setDate(targetLocal.getDate() + 1);
+    dayShifted = true;
+  }
+
+  // "in N days" — digit or word
+  const inDaysDigit = lower.match(/\bin\s+(\d+)\s*day(s)?\b/);
+  const inDaysWord  = lower.match(/\bin\s+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fourteen|fifteen|twenty|thirty)\s*day(s)?\b/);
+  const inDaysValue = inDaysDigit
+    ? parseInt(inDaysDigit[1], 10)
+    : (inDaysWord ? wordToNumber(inDaysWord[1]) : null);
+  if (inDaysValue) {
+    targetLocal.setDate(targetLocal.getDate() + inDaysValue);
+    dayShifted = true;
+  }
 
   // "in X minutes" — accept digits OR word-form numbers ("one", "two", ...)
   const inMinDigit = lower.match(/\bin\s+(\d+)\s*minute(s)?\b/);
@@ -195,6 +215,14 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
     targetLocal.setSeconds(0, 0);
     return { targetLocal, localNow, nowUtc };
   }
+
+  // Day-shifted with no time-of-day — interpret as "this same time" on the
+  // shifted day. Covers "tomorrow", "tomorrow at this same time", "in 3
+  // days", "in three days at this same time", etc.
+  if (dayShifted) {
+    return { targetLocal, localNow, nowUtc };
+  }
+
   return null;
 }
 
@@ -852,11 +880,25 @@ app.post("/vapi", async (req, res) => {
           message?.call?.customer?.number ||
           fn.arguments?.customerNumber;
         const timezone = inferTimezone(customerNumber);
-        const parsed = parseSuggestedTimeToLocalDate({ suggestedTimeText: suggestedTime, timezone });
+        let parsed = parseSuggestedTimeToLocalDate({ suggestedTimeText: suggestedTime, timezone });
         if (!parsed) {
-          return res.json({
-            results: [{ toolCallId: toolCall.id, result: "Could not parse suggested time" }]
+          // The prompt requires Imani to translate vague phrases into
+          // concrete times before invoking the tool, but if she still
+          // passes through something unparseable ("a few minutes",
+          // "later", "soon"), recover with a 5-minute default rather
+          // than failing silently — the participant just heard "Take
+          // care." and the call is about to end, so without a fallback
+          // they would never get called back.
+          console.warn("schedule_callback: suggestedTime unparseable, falling back to 5-minute default", { suggestedTime });
+          parsed = parseSuggestedTimeToLocalDate({
+            suggestedTimeText: "in five minutes",
+            timezone
           });
+          if (!parsed) {
+            return res.json({
+              results: [{ toolCallId: toolCall.id, result: "Could not parse suggested time" }]
+            });
+          }
         }
         const { targetLocal, localNow, nowUtc } = parsed;
         const offsetMs = localNow.getTime() - nowUtc.getTime();
