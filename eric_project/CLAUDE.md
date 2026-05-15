@@ -237,7 +237,7 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 - Model: `claude-sonnet-4-20250514`, `temperature: 0.4`, `maxTokens: 250` (matches sim parity)
 - Voice: ElevenLabs (voice ID configured in dashboard)
 - Transcriber: Speechmatics or Deepgram (varies; check assistant config). Watch transcription accuracy on quiet/short answers.
-- `firstMessageMode: assistant-waits-for-user`, empty `firstMessage` (participant speaks first — usually a "Hello?" on pickup — then Imani delivers her introduction)
+- `firstMessageMode: assistant-speaks-first-with-model-generated-message`, empty `firstMessage` (model generates the first turn from the system prompt). Tried `assistant-waits-for-user` briefly but reverted — model first-token latency makes Imani's opening greeting slow enough that there's no perceptible overlap with the participant's pickup, so having her speak first feels cleaner.
 - `startSpeakingPlan.waitSeconds: 0.3`, `stopSpeakingPlan.numWords: 3, voiceSeconds: 0.3`
 - `endCallFunctionEnabled: true`
 - `serverMessages: ["function-call", "tool-calls", "status-update", "hang", "end-of-call-report", "speech-update"]`. `speech-update` is required for the wrap-up flow to detect participant-stop events.
@@ -303,7 +303,7 @@ Recorded so future iterations don't relearn these the hard way.
 
 ### Other
 
-- **Vapi assistant pre-config:** Vapi's `firstMessageMode: assistant-speaks-first` with empty `firstMessage` causes the assistant to wait silently. Use `assistant-speaks-first-with-model-generated-message` to have the model generate the first turn from the system prompt. **Production currently uses `assistant-waits-for-user`** — the participant speaks first (typically "Hello?" on pickup), and Imani delivers her introduction in response. This avoids a small awkward beat where Imani would otherwise start talking over the participant's pickup greeting.
+- **Vapi assistant pre-config:** Vapi's `firstMessageMode: assistant-speaks-first` with empty `firstMessage` causes the assistant to wait silently. Use `assistant-speaks-first-with-model-generated-message` to have the model generate the first turn from the system prompt. Tried `assistant-waits-for-user` briefly (participant speaks first) but reverted — model first-token latency already delays Imani's greeting enough that overlap with the participant's pickup isn't a real problem, so having her speak first is cleaner.
 - **`schedule_callback`'s `customerNumber` argument is unreliable.** The model passes the literal `"{{customerNumber}}"` placeholder string, or no value, or a malformed phone. Server takes `customerNumber` from `message.call.customer.number` (guaranteed E.164) and ignores the model's value.
 - **The model picks the wrong scheduling tool at end of session.** Despite tool descriptions explicitly disambiguating `schedule_callback` (for "I can't talk now" only) and `schedule_next_session` (for end-of-session next-session scheduling), the model picks `schedule_callback` for short delays like "in one minute" because the pattern feels callback-shaped. Server-side intercept (`inWrapUpPhaseForCallId`) compensates by reassigning the function name when invoked in wrap-up phase.
 - **The model invokes `schedule_next_session` prematurely** with its own clarifying question as the `suggestedTime` argument when the participant declines the default. Tool description explicitly forbids this. Server has a parse-failure fallback to "in three days at this same time" so a real follow-up call gets queued either way.
