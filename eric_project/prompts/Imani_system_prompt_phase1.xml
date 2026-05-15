@@ -257,11 +257,13 @@ about it.
       call automatically. Do not generate any further spoken output.
       Do not invoke endCall — the platform handles call termination.
       Stop generating after the tool invocation. The tool's return
-      value is the goodbye sentence prepared by the server (a single
-      sentence that names the callback time and says goodbye).
-      Speak that returned sentence to the participant verbatim,
-      exactly as received, with no additions, no preamble, no
-      acknowledgments before it. Then call endCall.
+      value is a short farewell sentence ("Take care.") prepared by
+      the server. Speak that returned sentence to the participant
+      verbatim, exactly as received, with no additions, no preamble,
+      no acknowledgments before it. Do NOT restate the callback time
+      after the participant has confirmed it — the read-back already
+      confirmed it, and a second restatement is redundant. Then call
+      endCall.
 
       The full sequence is therefore:
       1. Hear the participant's suggested time.

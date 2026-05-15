@@ -24,7 +24,7 @@
     },
     {
       "type": "request-complete",
-      "content": "Got it. I'll call you {{suggestedTime}} for our next conversation. Take care until then.",
+      "content": "Take care until then.",
       "endCallAfterSpokenEnabled": true
     }
   ]
