@@ -119,7 +119,7 @@ vapi-interview-webhook/
 - `POST /timing/wrap-up` — QStash trigger at T - `WRAPUP_OFFSET_MINUTES`. **Queues** the wrap-up text in `pendingWrapUpByCallId` and marks the call in `inWrapUpPhaseForCallId`. Does NOT speak yet — that happens in the speech-update handler when the participant's next turn ends.
 - `POST /timing/force-close` — QStash trigger ~30s before hard cap. Force-speaks the closing line via Vapi `{type:"say"}`, `endCallAfterSpoken:true` auto-hangs up. Skips silently if call already ended.
 - `POST /timing/hard-cap` — final fail-safe at INTERVIEW_MAX_MINUTES. Ends Vapi call via controlUrl `{type:"end-call"}`. Skips silently if call already ended.
-- `POST /timing/fire-callback` — QStash trigger for short-fuse callbacks. Dials Vapi immediately with the appropriate prompt (controlled by `isCallback` in body). Used by both `schedule_callback` (short Session 1 retry) and `schedule_next_session` (short Session 2/3 dial).
+- `POST /timing/fire-callback` — QStash trigger for short-fuse callbacks. Dials Vapi immediately with the appropriate prompt (controlled by `isCallback` in body). Used by both `schedule_callback` (same-session retry, any session 1/2/3) and `schedule_next_session` (short Session 2/3 dial).
 
 ### Prompt structure
 
@@ -245,7 +245,7 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 
 ### `schedule_callback` tool (reusable, Vapi org-level)
 
-Snapshot at `eric_project/vapi_config/schedule_callback.json`. Used at the start of a Session 1 call when the participant says "not now, call me back later".
+Snapshot at `eric_project/vapi_config/schedule_callback.json`. Used when the participant says "not now, call me back later" at the start of any session — Session 1's consent step, or Session 2/3's "Is now still a good time to talk?" check. Server preserves the live `ACTIVE_SESSION` and `PRIOR_SESSIONS_CONTEXT` from the current call so the rescheduled call re-enters at the same session with the same prior context.
 - Parameters: `suggestedTime` (required), `customerNumber` (optional — server uses call.customer.number; the model's value is ignored).
 - Description explicitly forbids using it for next-session scheduling.
 - `messages[0]`: `{type: "request-start", content: ""}` — empty content suppresses the model's filler.

@@ -908,15 +908,25 @@ app.post("/vapi", async (req, res) => {
           message?.call?.assistantId || message?.assistant?.id || ASSISTANT_ID;
         const callId = message?.call?.id;
 
+        // Carry over the current session's context. schedule_callback
+        // reschedules the SAME session, so the rescheduled call must
+        // re-enter at the same active_session with the same
+        // prior_sessions_context — otherwise a Session 2 reschedule
+        // would dial back as a Session 1 cold call.
+        const liveVars = message?.call?.assistantOverrides?.variableValues || {};
+        const currentSession = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
+        const priorContext = liveVars.PRIOR_SESSIONS_CONTEXT || "";
+        const participantName = liveVars.PARTICIPANT_NAME || "";
+
         const scheduled = await scheduleVapiCallback({
           assistantId: assistantIdForCallback,
           customerNumber,
           earliestAtIso: utcTarget.toISOString(),
           variableValues: buildVariableValues({
-            activeSession: 1,
-            priorSessionsContext: "",
+            activeSession: currentSession,
+            priorSessionsContext: priorContext,
             isCallback: true,
-            participantName: "",
+            participantName,
             country: inferCountryFromPhone(customerNumber)
           })
         });
@@ -932,7 +942,7 @@ app.post("/vapi", async (req, res) => {
           if (p?.id) {
             await recordScheduledCall({
               participantId: p.id,
-              sessionNumber: 1,
+              sessionNumber: currentSession,
               scheduledAt: utcTarget.toISOString(),
               vapiCallId: scheduled?.id
             });

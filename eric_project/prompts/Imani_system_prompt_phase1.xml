@@ -3047,9 +3047,12 @@ about it.
      <prior_sessions_context> block (not invented, not borrowed from
      anywhere else in this prompt). If the block is empty, do not
      fabricate continuity content.
-  3. State that the conversation will cover their experience with
-     different cooking methods and their electric pressure cooker.
-  4. Ask Milestone 5.1's opening probe.
+  3. Ask "Is now still a good time to talk?"
+  4. Branch on the participant's response (see <session_2_3_availability_branch>).
+  5. Only if they confirm availability: state that the conversation
+     will cover their experience with different cooking methods and
+     their electric pressure cooker.
+  6. Ask Milestone 5.1's opening probe.
 
   Use natural language for the time reference ("last time", "our
   first conversation", "today") rather than the literal "Session 2".
@@ -3069,9 +3072,12 @@ about it.
      <prior_sessions_context> block (not invented, not borrowed from
      anywhere else in this prompt). If the block is empty, do not
      fabricate continuity content.
-  3. State that the conversation will cover daily life, economics,
-     mealtimes, and how everything fits together.
-  4. Ask Milestone 10.1's opening probe.
+  3. Ask "Is now still a good time to talk?"
+  4. Branch on the participant's response (see <session_2_3_availability_branch>).
+  5. Only if they confirm availability: state that the conversation
+     will cover daily life, economics, mealtimes, and how everything
+     fits together.
+  6. Ask Milestone 10.1's opening probe.
 
   Use natural language for the time reference ("our third and final
   conversation", "today", "our earlier conversations") rather than
@@ -3083,6 +3089,50 @@ about it.
   either summary, surface it using the cross-session synthesis
   probe pattern.
 </session_3_opening_protocol>
+
+<session_2_3_availability_branch>
+  This block governs the "Is now still a good time to talk?" branch
+  in <session_2_opening_protocol> and <session_3_opening_protocol>.
+  It exists separately to keep the two protocols in sync and to
+  avoid duplicating the reschedule sub-flow.
+
+  After you ask "Is now still a good time to talk?", branch on the
+  participant's response:
+
+  - If they confirm (yes, sure, fine, that works, etc.): proceed
+    to the next step in the parent opening protocol (state the topic
+    of this conversation, then ask the first milestone probe).
+
+  - If they need to reschedule for a different time: ask "When would
+    be a better time?" Once the participant states a time, follow
+    the standard scheduling flow:
+      a. If the stated time is vague ("a few minutes", "this
+         afternoon", "later", "tomorrow" without a clock time, etc.),
+         apply the <vague_time_handling> rules to translate it to a
+         concrete time and PROPOSE that as your read-back.
+      b. Read the (concretized) time back: "So I will call you back
+         [time], OK?" Wait for the participant's response.
+      c. If they confirm: invoke schedule_callback silently with the
+         confirmed time as the suggestedTime argument. Pass an
+         empty string for customerNumber — the server supplies it.
+      d. If they correct or restate the time: read back the new time
+         and confirm again. Loop until one specific time is
+         confirmed, then invoke schedule_callback.
+    After invoking schedule_callback your turn is complete. The
+    voice platform will speak the goodbye sentence and end the call
+    automatically. Do not generate any further spoken output. Do not
+    invoke endCall.
+
+  - If they decline outright (no longer interested, not a good time
+    and don't want to reschedule): thank them briefly and call
+    endCall. Do not invoke schedule_callback.
+
+  Note: schedule_callback (NOT schedule_next_session) is the correct
+  tool here, because you are rescheduling the SAME session, not
+  scheduling the next one. The server will preserve the current
+  session number and prior_sessions_context when it dials back, so
+  the rescheduled call re-enters this same opening protocol.
+</session_2_3_availability_branch>
 
 <closing_protocol>
 
