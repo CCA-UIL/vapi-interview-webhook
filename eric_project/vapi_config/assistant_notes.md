@@ -38,11 +38,11 @@ _Notes:_
 #### Nigeria voice
 
 | Provider | `11labs` |
-| Voice ID | `EYQ7WzWOUhRLHwL7i08O` |
+| Voice ID | `gM1otA87NrAmOwyCoJE6` |
 | Voice model | 'Eleven_flash_v2_5' |   a bit less latency than the 11labs multilngual v2
 | Stability | `0.5` |
 | Clarity + similarity | `0.8` |
-| Speed | `1.1` |
+| Speed | `1.0` |
 
 11labs voices
 
@@ -50,7 +50,7 @@ _Notes:_
 Adeola **- a bit slow . intonations not natural.  a bit boring.
 Olabisi - intonations not natural eOHsvebhdtt0XFeHVMQY
 Bukola - robotic. 
-Princess - very good but unnaturally short pauses between sentences. happy.  EYQ7WzWOUhRLHwL7i08O 
+Princess - very good but often she does not pause between sentences. happy.  EYQ7WzWOUhRLHwL7i08O. Tried lowere stability to see if that worked
 Taiwo- too serious
 Bonnie - good but weird intonations. eSsKYR3BasKvhJghjsCX (high latency?)
 Taiwo- sounds pretty natural but very monotonous and boring
@@ -76,8 +76,8 @@ Kehinde- one of the best. a bit serious. increase to 1.1 gM1otA87NrAmOwyCoJE6
 
 ### Higher quality transcriber
 
-| Provider | `deepgram` |
-| Model | `nova-3-general` | via Composer (can't select it in the Dashboard)
+| Provider | `speechmatics` |
+| Model | `` | via Composer (can't select it in the Dashboard)
 | Language | `English` |
 | Background Denoising | 'On' |
 | Smart endpointing | 'Off'| have not tried this yet
@@ -85,6 +85,9 @@ Kehinde- one of the best. a bit serious. increase to 1.1 gM1otA87NrAmOwyCoJE6
 | Numerals | `` (numbers spelled out) |
 
 speechmatics adds a lot of latency. 
+deepgram nova-3 general has ok latency but did not transcribe Nigerian accent well
+Gladia - drops speech sometimes
+AssemblyAI - did not transcribe me accurately
 
 ### Call-flow / timing
 
