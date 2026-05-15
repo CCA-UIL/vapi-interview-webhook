@@ -237,7 +237,7 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 - Model: `claude-sonnet-4-20250514`, `temperature: 0.4`, `maxTokens: 250` (matches sim parity)
 - Voice: ElevenLabs (voice ID configured in dashboard)
 - Transcriber: Speechmatics or Deepgram (varies; check assistant config). Watch transcription accuracy on quiet/short answers.
-- `firstMessageMode: assistant-speaks-first-with-model-generated-message`, empty `firstMessage`
+- `firstMessageMode: assistant-waits-for-user`, empty `firstMessage` (participant speaks first — usually a "Hello?" on pickup — then Imani delivers her introduction)
 - `startSpeakingPlan.waitSeconds: 0.3`, `stopSpeakingPlan.numWords: 3, voiceSeconds: 0.3`
 - `endCallFunctionEnabled: true`
 - `serverMessages: ["function-call", "tool-calls", "status-update", "hang", "end-of-call-report", "speech-update"]`. `speech-update` is required for the wrap-up flow to detect participant-stop events.
@@ -303,7 +303,7 @@ Recorded so future iterations don't relearn these the hard way.
 
 ### Other
 
-- **Vapi assistant pre-config:** Vapi's `firstMessageMode: assistant-speaks-first` with empty `firstMessage` causes the assistant to wait silently. Use `assistant-speaks-first-with-model-generated-message` to have the model generate the first turn from the system prompt.
+- **Vapi assistant pre-config:** Vapi's `firstMessageMode: assistant-speaks-first` with empty `firstMessage` causes the assistant to wait silently. Use `assistant-speaks-first-with-model-generated-message` to have the model generate the first turn from the system prompt. **Production currently uses `assistant-waits-for-user`** — the participant speaks first (typically "Hello?" on pickup), and Imani delivers her introduction in response. This avoids a small awkward beat where Imani would otherwise start talking over the participant's pickup greeting.
 - **`schedule_callback`'s `customerNumber` argument is unreliable.** The model passes the literal `"{{customerNumber}}"` placeholder string, or no value, or a malformed phone. Server takes `customerNumber` from `message.call.customer.number` (guaranteed E.164) and ignores the model's value.
 - **The model picks the wrong scheduling tool at end of session.** Despite tool descriptions explicitly disambiguating `schedule_callback` (for "I can't talk now" only) and `schedule_next_session` (for end-of-session next-session scheduling), the model picks `schedule_callback` for short delays like "in one minute" because the pattern feels callback-shaped. Server-side intercept (`inWrapUpPhaseForCallId`) compensates by reassigning the function name when invoked in wrap-up phase.
 - **The model invokes `schedule_next_session` prematurely** with its own clarifying question as the `suggestedTime` argument when the participant declines the default. Tool description explicitly forbids this. Server has a parse-failure fallback to "in three days at this same time" so a real follow-up call gets queued either way.
@@ -321,6 +321,7 @@ Recorded so future iterations don't relearn these the hard way.
 - **Server-side intercept** redirects misrouted `schedule_callback` invocations during wrap-up to `schedule_next_session`.
 - **Country localization is server-derived.** The server uses `libphonenumber-js` to parse the participant's phone number, maps the ISO alpha-2 country code to an English country name (lookup table for KE/NG/GH/TZ/UG/ZA/RW/ET/US/GB/CA; ISO code as fallback for unmapped countries), and passes it as the `COUNTRY` runtime variable. The prompt's `<localization>` block uses `{{COUNTRY}}` to adapt Imani's behaviour. No country-specific knowledge packs are baked in for MVP — relies on the model's training-data knowledge of country-specific English.
 - **Operator web form at `/`.** Static HTML in `public/index.html` served by the same Render service. Remote operators can trigger calls via a browser instead of curl or Postman. `/start-call` is protected by `X-API-Key` header (env var `START_CALL_API_KEY`); the form prompts for the key once and stores it in browser localStorage.
+- **Read-back-and-confirm before scheduling.** Before invoking either `schedule_callback` or `schedule_next_session`, Imani must read the proposed time back to the participant ("So I will call you back tomorrow at 3pm, OK?") and wait for explicit confirmation. Specified in three prompt locations: `<session_1_initial_call_flow>` Step 2 callback sub-flow, `<session_1_callback_flow>` Step 3 reschedule branch (which references the Step 2 sub-flow), and the new top-level `<next_session_scheduling>` block (which governs end-of-session scheduling for Sessions 1 and 2). The block is not stripped by `loadPromptForCall` — it applies to every session. The tool's `request-complete` message remains the final goodbye that's spoken after Vapi receives the tool invocation.
 
 ## Iteration History — Lessons Learned (Don't Repeat These)
 
