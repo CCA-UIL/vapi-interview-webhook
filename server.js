@@ -711,6 +711,58 @@ app.post("/start-call", async (req, res) => {
 });
 
 /**
+ * GET /scheduled-calls
+ * Returns future-only scheduled calls for the operator dashboard.
+ * Auth: same X-API-Key gate as /start-call.
+ */
+app.get("/scheduled-calls", async (req, res) => {
+  try {
+    if (START_CALL_API_KEY) {
+      const provided = req.header("X-API-Key");
+      if (provided !== START_CALL_API_KEY) {
+        return res.status(401).json({ error: "Unauthorized: missing or invalid X-API-Key header" });
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const { data: scheduled, error: schedErr } = await supabase
+      .from("scheduled_calls")
+      .select("scheduled_at, session_number, vapi_call_id, participant_id, status")
+      .gt("scheduled_at", nowIso)
+      .order("scheduled_at", { ascending: true });
+    if (schedErr) throw schedErr;
+
+    const participantIds = [...new Set((scheduled || []).map(s => s.participant_id).filter(Boolean))];
+    let participantsById = {};
+    if (participantIds.length > 0) {
+      const { data: parts, error: partErr } = await supabase
+        .from("participants")
+        .select("id, phone_number, name")
+        .in("id", participantIds);
+      if (partErr) throw partErr;
+      participantsById = Object.fromEntries((parts || []).map(p => [p.id, p]));
+    }
+
+    const rows = (scheduled || []).map(s => {
+      const p = participantsById[s.participant_id] || {};
+      return {
+        scheduledAt: s.scheduled_at,
+        phoneNumber: p.phone_number || null,
+        name: p.name || null,
+        sessionNumber: s.session_number,
+        vapiCallId: s.vapi_call_id,
+        status: s.status
+      };
+    });
+
+    return res.json({ ok: true, count: rows.length, rows });
+  } catch (err) {
+    console.error("scheduled-calls error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
  * POST /vapi
  * Vapi server webhook. Handles status-update, tool-calls, end-of-call-report.
  */

@@ -58,6 +58,33 @@
     #status.ok { background: #d1fae5; color: #065f46; display: block; }
     #status.err { background: #fee2e2; color: #991b1b; display: block; }
     #status.info { background: #dbeafe; color: #1e40af; display: block; }
+    .scheduled-section { margin-top: 2.5rem; }
+    .scheduled-section h2 { font-size: 1.15rem; margin-bottom: 0.4rem; }
+    .scheduled-section .row-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.5rem; margin-bottom: 0.5rem;
+    }
+    .scheduled-section button.refresh {
+      width: auto; margin: 0; padding: 0.3rem 0.7rem; font-size: 0.85rem;
+      font-weight: 500; background: #e5e7eb; color: #1f2937;
+    }
+    .scheduled-section button.refresh:hover:not(:disabled) { background: #d1d5db; }
+    #sched-status {
+      font-size: 0.85rem; color: #6b7280; margin: 0 0 0.5rem 0;
+    }
+    table.scheduled {
+      width: 100%; border-collapse: collapse; font-size: 0.9rem;
+    }
+    table.scheduled th, table.scheduled td {
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0.5rem 0.4rem; text-align: left;
+    }
+    table.scheduled th {
+      font-weight: 600; color: #374151; background: #f9fafb;
+    }
+    table.scheduled td.empty {
+      text-align: center; color: #6b7280; padding: 1rem 0.4rem;
+    }
   </style>
 </head>
 <body>
@@ -86,6 +113,24 @@
   </form>
 
   <div id="status"></div>
+
+  <section class="scheduled-section">
+    <div class="row-head">
+      <h2>Scheduled calls (future)</h2>
+      <button type="button" class="refresh" id="refresh-sched-btn">Refresh</button>
+    </div>
+    <p id="sched-status">Enter API key above to load scheduled calls.</p>
+    <table class="scheduled" id="sched-table" style="display: none;">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Phone</th>
+          <th>Session</th>
+        </tr>
+      </thead>
+      <tbody id="sched-body"></tbody>
+    </table>
+  </section>
 
   <script>
     const form = document.getElementById('call-form');
@@ -152,7 +197,91 @@
       } finally {
         submitBtn.disabled = false;
       }
+
+      // Refresh the scheduled-calls table after a successful dial in case
+      // the participant immediately requests a reschedule.
+      refreshScheduledCalls();
     });
+
+    // ----- Scheduled calls table -----
+    const schedStatusEl = document.getElementById('sched-status');
+    const schedTableEl = document.getElementById('sched-table');
+    const schedBodyEl = document.getElementById('sched-body');
+    const refreshBtn = document.getElementById('refresh-sched-btn');
+
+    function formatScheduledAt(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      // Locale time + date, in the operator's local timezone.
+      return d.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: '2-digit',
+        hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    async function refreshScheduledCalls() {
+      const apikey = apikeyEl.value.trim();
+      if (!apikey) {
+        schedStatusEl.textContent = 'Enter API key above to load scheduled calls.';
+        schedTableEl.style.display = 'none';
+        return;
+      }
+      schedStatusEl.textContent = 'Loading...';
+      schedTableEl.style.display = 'none';
+
+      try {
+        const resp = await fetch('/scheduled-calls', {
+          headers: { 'X-API-Key': apikey }
+        });
+        const data = await resp.json();
+
+        if (resp.status === 401) {
+          schedStatusEl.textContent = 'Unauthorized — check the API key.';
+          return;
+        }
+        if (!resp.ok || !data.ok) {
+          schedStatusEl.textContent = 'Error: ' + (data.error || ('HTTP ' + resp.status));
+          return;
+        }
+
+        const rows = data.rows || [];
+        schedBodyEl.innerHTML = '';
+        if (rows.length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 3;
+          td.className = 'empty';
+          td.textContent = 'No future calls scheduled.';
+          tr.appendChild(td);
+          schedBodyEl.appendChild(tr);
+        } else {
+          for (const r of rows) {
+            const tr = document.createElement('tr');
+            const tdWhen = document.createElement('td');
+            tdWhen.textContent = formatScheduledAt(r.scheduledAt);
+            const tdPhone = document.createElement('td');
+            tdPhone.textContent = r.phoneNumber || '(unknown)';
+            const tdSession = document.createElement('td');
+            tdSession.textContent = r.sessionNumber || '';
+            tr.appendChild(tdWhen);
+            tr.appendChild(tdPhone);
+            tr.appendChild(tdSession);
+            schedBodyEl.appendChild(tr);
+          }
+        }
+        schedStatusEl.textContent = rows.length + ' upcoming call' + (rows.length === 1 ? '' : 's') +
+          '. Last refreshed ' + new Date().toLocaleTimeString();
+        schedTableEl.style.display = 'table';
+      } catch (err) {
+        schedStatusEl.textContent = 'Network error: ' + err.message;
+      }
+    }
+
+    refreshBtn.addEventListener('click', refreshScheduledCalls);
+
+    // Auto-load on page open if API key is already remembered.
+    if (apikeyEl.value) refreshScheduledCalls();
   </script>
 </body>
 </html>
