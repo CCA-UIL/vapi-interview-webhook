@@ -769,10 +769,10 @@ app.post("/vapi", async (req, res) => {
         // Force-close speaks this verbatim and hangs up.
         const closingSentence = isFinalSession
           ? `Well, that wraps up our final interview session. ` +
-            `Thank you so much for everything you've shared across our conversations. Take care.`
+            `Thank you so much for everything you've shared across our conversations. Take care. Goodbye.`
           : `Well, that wraps up today's interview session. ` +
             `Thank you so much for everything you've shared today. ` +
-            `Take care until then.`;
+            `Take care until then. Goodbye.`;
 
         // Soft signal: force Imani to SAY this verbatim via Vapi's say
         // action. The /timing/wrap-up handler stores this text and waits
@@ -789,7 +789,7 @@ app.post("/vapi", async (req, res) => {
         // ends after Vapi speaks it.
         const softWrapupContent = isFinalSession
           ? `Well, that wraps up our final interview session. ` +
-            `Thank you so much for everything you've shared across our conversations. Take care.`
+            `Thank you so much for everything you've shared across our conversations. Take care. Goodbye.`
           : `Well, that wraps up our interview for today. ` +
             `Thank you so much for everything you've shared. ` +
             `Before we go, I'd like to schedule our next conversation. ` +

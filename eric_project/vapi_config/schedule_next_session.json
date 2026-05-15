@@ -24,7 +24,7 @@
     },
     {
       "type": "request-complete",
-      "content": "Take care until then.",
+      "content": "Take care until then. Goodbye.",
       "endCallAfterSpokenEnabled": true
     }
   ]

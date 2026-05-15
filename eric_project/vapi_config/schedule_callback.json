@@ -26,7 +26,7 @@
     },
     {
       "type": "request-complete",
-      "content": "Take care.",
+      "content": "Take care. Goodbye.",
       "endCallAfterSpokenEnabled": true
     }
   ]
