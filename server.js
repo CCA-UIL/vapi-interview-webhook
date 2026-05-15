@@ -322,6 +322,52 @@ async function vapiPost(path, body) {
   return result;
 }
 
+// Fetch the live assistant config from Vapi and log a snapshot of the
+// fields most relevant to per-call performance: transcriber, voice, model,
+// and the timing/silence settings. Logged once per /start-call so future
+// log review can pair a callId with the exact config that was active.
+async function logCallConfigSnapshot(callId, assistantId) {
+  if (!callId || !assistantId) return;
+  try {
+    const resp = await fetch(`https://api.vapi.ai/assistant/${assistantId}`, {
+      headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
+    });
+    if (!resp.ok) {
+      console.warn("logCallConfigSnapshot: assistant fetch failed", resp.status);
+      return;
+    }
+    const a = await resp.json();
+    console.log("Call config snapshot:", JSON.stringify({
+      callId,
+      transcriber: {
+        provider: a.transcriber?.provider,
+        model: a.transcriber?.model,
+        language: a.transcriber?.language,
+        maxDelay: a.transcriber?.maxDelay,
+        confidenceThreshold: a.transcriber?.confidenceThreshold
+      },
+      voice: {
+        provider: a.voice?.provider,
+        voiceId: a.voice?.voiceId,
+        model: a.voice?.model,
+        speed: a.voice?.speed
+      },
+      model: {
+        provider: a.model?.provider,
+        model: a.model?.model,
+        temperature: a.model?.temperature,
+        maxTokens: a.model?.maxTokens
+      },
+      startSpeakingPlan: a.startSpeakingPlan,
+      stopSpeakingPlan: a.stopSpeakingPlan,
+      silenceTimeoutSeconds: a.silenceTimeoutSeconds,
+      backgroundDenoisingEnabled: a.backgroundDenoisingEnabled
+    }));
+  } catch (e) {
+    console.warn("logCallConfigSnapshot threw:", e.message);
+  }
+}
+
 // =============================================================================
 // Prompt assembly
 // =============================================================================
@@ -614,6 +660,14 @@ app.post("/start-call", async (req, res) => {
     });
 
     await setSessionCallId(session.id, started?.id);
+
+    // Snapshot the live assistant config so we know which transcriber /
+    // voice / model settings were active at the moment of this call.
+    // Vapi's call object reports the *current* assistant config, not the
+    // historical one — without this we can't reconstruct what was tested.
+    logCallConfigSnapshot(started?.id, assistantId || ASSISTANT_ID).catch(e =>
+      console.warn("Config snapshot log failed:", e.message)
+    );
 
     return res.json({
       ok: true,
