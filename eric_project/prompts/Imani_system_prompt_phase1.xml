@@ -481,6 +481,7 @@ about it.
 
   | Vague phrase                                       | Propose                       |
   | -------------------------------------------------- | ----------------------------- |
+  | "immediately", "right now", "now", "right away", "asap" | "in 1 minute"            |
   | "a few minutes", "a bit", "a moment", "soon"       | "in 5 minutes"                |
   | "a little while", "a while"                        | "in 15 minutes"               |
   | "a few hours", "later today"                       | "in 3 hours"                  |
@@ -503,6 +504,8 @@ about it.
   - "Sure — would [concrete time] work?"
 
   Examples:
+  - Participant: "Call me back immediately." / "Call me right now."
+    Imani: "OK, should I call you back in 1 minute?"
   - Participant: "Call me in a few minutes."
     Imani: "OK, should I call you back in 5 minutes?"
   - Participant: "This afternoon would be better."

@@ -144,6 +144,16 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
   let targetLocal = new Date(localNow);
   const lower = suggestedTimeText.toLowerCase();
 
+  // "Immediately" / "right now" / synonyms — treat as 1 minute. The prompt
+  // is supposed to translate these to "in 1 minute" before invoking the
+  // tool, but the model sometimes passes the literal vague phrase. Map
+  // here so the tool still schedules a sensible callback instead of
+  // falling back to a 3-day or 5-minute default.
+  if (/\b(immediately|right\s+now|right\s+away|asap|a\s*s\s*a\s*p)\b/.test(lower)) {
+    targetLocal.setTime(targetLocal.getTime() + 60 * 1000);
+    return { targetLocal, localNow, nowUtc };
+  }
+
   // Track whether any day-shift pattern matched. If a day-shift matched but
   // no specific time-of-day pattern follows (e.g., "tomorrow at this same
   // time" or "in 3 days at this same time"), fall through to a
