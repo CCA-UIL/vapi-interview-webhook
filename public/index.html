@@ -41,6 +41,8 @@
     .toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
     .toolbar button.primary { background: #2563eb; color: white; }
     .toolbar button.primary:hover:not(:disabled) { background: #1d4ed8; }
+    .toolbar button.danger { background: #fee2e2; color: #991b1b; }
+    .toolbar button.danger:hover:not(:disabled) { background: #fecaca; }
     #global-status {
       padding: 0.6rem 0.9rem;
       border-radius: 6px;
@@ -73,14 +75,19 @@
       text-transform: uppercase;
       letter-spacing: 0.03em;
     }
-    table.calls col.col-phone    { width: 13%; }
-    table.calls col.col-name     { width: 14%; }
-    table.calls col.col-schedule { width: 16%; }
+    table.calls col.col-select   { width: 3%;  }
+    table.calls col.col-phone    { width: 12%; }
+    table.calls col.col-name     { width: 13%; }
+    table.calls col.col-schedule { width: 15%; }
     table.calls col.col-when     { width: 13%; }
     table.calls col.col-session  { width: 6%;  }
     table.calls col.col-status   { width: 9%;  }
-    table.calls col.col-notes    { width: 13%; }
-    table.calls col.col-actions  { width: 16%; }
+    table.calls col.col-notes    { width: 14%; }
+    table.calls col.col-actions  { width: 15%; }
+    table.calls td.select, table.calls th.select { text-align: center; }
+    table.calls input[type="checkbox"] { cursor: pointer; }
+    tr.selected td { background: #eff6ff; }
+    tr.selected.draft-row td { background: #e0eaff; }
     table.calls input[type=tel],
     table.calls input[type=text],
     table.calls input[type=datetime-local] {
@@ -154,12 +161,14 @@
     </div>
     <button type="button" id="add-row-btn">+ Add row</button>
     <button type="button" id="refresh-btn">Refresh</button>
+    <button type="button" id="bulk-delete-btn" class="danger" disabled>Delete selected (0)</button>
   </div>
 
   <div id="global-status"></div>
 
   <table class="calls" id="calls-table">
     <colgroup>
+      <col class="col-select">
       <col class="col-phone">
       <col class="col-name">
       <col class="col-schedule">
@@ -171,6 +180,7 @@
     </colgroup>
     <thead>
       <tr>
+        <th class="select"><input type="checkbox" id="select-all" title="Select all"></th>
         <th>Phone</th>
         <th>Name</th>
         <th>Schedule <span style="font-weight:400;color:#6b7280;">(blank = now)</span></th>
@@ -256,6 +266,7 @@
       tr.dataset.kind = 'draft';
       tr.dataset.id = d.id;
       tr.innerHTML = `
+        <td class="select"><input type="checkbox" class="row-select"></td>
         <td><input type="tel" class="f-phone" placeholder="+2348037642802" value="${d.phone || ''}"></td>
         <td><input type="text" class="f-name" placeholder="Mr. Emeka Obi" value="${d.name || ''}"></td>
         <td><input type="datetime-local" class="f-schedule" value="${d.scheduledAtLocal || ''}"></td>
@@ -276,6 +287,7 @@
       tr.querySelector('.f-schedule').addEventListener('input', e => updateDraft(d.id, 'scheduledAtLocal', e.target.value));
       tr.querySelector('button.call').addEventListener('click', () => submitDraft(tr, d.id));
       tr.querySelector('button.delete').addEventListener('click', () => deleteDraft(d.id));
+      tr.querySelector('.row-select').addEventListener('change', onRowSelectChange);
       return tr;
     }
 
@@ -285,6 +297,7 @@
       tr.dataset.id = r.scheduledCallId;
       if (r.completed) tr.classList.add('completed-row');
       tr.innerHTML = `
+        <td class="select"><input type="checkbox" class="row-select"></td>
         <td class="read-only">${r.phoneNumber || ''}</td>
         <td class="read-only">${r.name || ''}</td>
         <td class="read-only"></td>
@@ -299,6 +312,7 @@
         </td>
       `;
       tr.querySelector('button.delete').addEventListener('click', () => deleteServerRow(r.scheduledCallId, tr));
+      tr.querySelector('.row-select').addEventListener('change', onRowSelectChange);
       return tr;
     }
 
@@ -309,11 +323,12 @@
       (serverRows || []).forEach(r => tbody.appendChild(renderServerRow(r)));
       if (drafts.length === 0 && (serverRows || []).length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td colspan="8" style="text-align:center;color:#6b7280;padding:1.5rem 0;">
+        tr.innerHTML = `<td colspan="9" style="text-align:center;color:#6b7280;padding:1.5rem 0;">
           No rows yet. Click "+ Add row" to start.
         </td>`;
         tbody.appendChild(tr);
       }
+      updateBulkDeleteButton();
     }
 
     // ----- Draft mutation -----
@@ -453,6 +468,92 @@
         rerender([]);
       }
     }
+
+    // ----- Bulk selection -----
+    const selectAllEl = document.getElementById('select-all');
+    const bulkDeleteBtn = document.getElementById('bulk-delete-btn');
+
+    function getSelectedRows() {
+      return Array.from(tbody.querySelectorAll('tr')).filter(tr => {
+        const cb = tr.querySelector('.row-select');
+        return cb && cb.checked;
+      });
+    }
+
+    function onRowSelectChange(e) {
+      const tr = e.target.closest('tr');
+      if (tr) tr.classList.toggle('selected', e.target.checked);
+      updateBulkDeleteButton();
+      // Keep select-all checkbox state in sync.
+      const allCheckboxes = Array.from(tbody.querySelectorAll('.row-select'));
+      if (allCheckboxes.length > 0) {
+        selectAllEl.checked = allCheckboxes.every(c => c.checked);
+        selectAllEl.indeterminate = !selectAllEl.checked && allCheckboxes.some(c => c.checked);
+      } else {
+        selectAllEl.checked = false;
+        selectAllEl.indeterminate = false;
+      }
+    }
+
+    function updateBulkDeleteButton() {
+      const n = getSelectedRows().length;
+      bulkDeleteBtn.disabled = n === 0;
+      bulkDeleteBtn.textContent = `Delete selected (${n})`;
+    }
+
+    selectAllEl.addEventListener('change', () => {
+      const checked = selectAllEl.checked;
+      Array.from(tbody.querySelectorAll('.row-select')).forEach(cb => {
+        cb.checked = checked;
+        const tr = cb.closest('tr');
+        if (tr) tr.classList.toggle('selected', checked);
+      });
+      selectAllEl.indeterminate = false;
+      updateBulkDeleteButton();
+    });
+
+    bulkDeleteBtn.addEventListener('click', async () => {
+      const rows = getSelectedRows();
+      if (rows.length === 0) return;
+      if (!confirm(`Delete ${rows.length} selected row${rows.length === 1 ? '' : 's'}? Future scheduled calls will be cancelled; past rows will be hidden from the dashboard (call logs remain in Supabase).`)) return;
+      const apikey = apikeyEl.value.trim();
+      bulkDeleteBtn.disabled = true;
+      setStatus('info', `Deleting ${rows.length} row(s)...`);
+
+      const draftIds = [];
+      const serverIds = [];
+      rows.forEach(tr => {
+        if (tr.dataset.kind === 'draft') draftIds.push(tr.dataset.id);
+        else if (tr.dataset.kind === 'server') serverIds.push(tr.dataset.id);
+      });
+
+      // Remove drafts locally.
+      if (draftIds.length > 0) {
+        const drafts = loadDrafts().filter(d => !draftIds.includes(d.id));
+        saveDrafts(drafts);
+      }
+
+      // DELETE server rows in parallel.
+      const results = await Promise.all(serverIds.map(async id => {
+        try {
+          const resp = await fetch('/scheduled-calls/' + encodeURIComponent(id), {
+            method: 'DELETE',
+            headers: { 'X-API-Key': apikey }
+          });
+          const data = await resp.json().catch(() => ({}));
+          return { id, ok: resp.ok && data.ok, status: resp.status, error: data.error };
+        } catch (err) {
+          return { id, ok: false, error: err.message };
+        }
+      }));
+      const failed = results.filter(r => !r.ok);
+      if (failed.length === 0) {
+        setStatus('ok', `Deleted ${rows.length} row${rows.length === 1 ? '' : 's'}.`);
+      } else {
+        setStatus('err', `Deleted ${rows.length - failed.length} of ${rows.length}. ${failed.length} failed: ${failed.map(f => f.error || ('HTTP ' + f.status)).join('; ')}`);
+      }
+      refresh();
+    });
 
     addRowBtn.addEventListener('click', addDraft);
     refreshBtn.addEventListener('click', () => { clearStatus(); refresh(); });
