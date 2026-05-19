@@ -350,9 +350,18 @@ const inWrapUpPhaseForCallId = new Set();
 // =============================================================================
 
 async function upsertParticipant({ phoneNumber, name }) {
+  // When the operator submits a blank name, do NOT overwrite an existing
+  // participant's stored name. Pass only phone_number — on conflict the
+  // update is a no-op for the name column; on insert (new phone) the
+  // column defaults to NULL. Per-call name tracking lives on
+  // scheduled_calls.name_at_call, not here.
+  const trimmed = (name || "").trim();
+  const row = trimmed
+    ? { phone_number: phoneNumber, name: trimmed }
+    : { phone_number: phoneNumber };
   const { data, error } = await supabase
     .from("participants")
-    .upsert({ phone_number: phoneNumber, name: name || null }, { onConflict: "phone_number" })
+    .upsert(row, { onConflict: "phone_number" })
     .select()
     .single();
   if (error) throw new Error(`upsertParticipant failed: ${error.message}`);
@@ -400,7 +409,7 @@ async function updateSessionByCallId(callId, updates) {
   if (error) console.error("updateSessionByCallId failed:", error.message);
 }
 
-async function recordScheduledCall({ participantId, sessionNumber, scheduledAt, vapiCallId }) {
+async function recordScheduledCall({ participantId, sessionNumber, scheduledAt, vapiCallId, nameAtCall = null }) {
   const { error } = await supabase
     .from("scheduled_calls")
     .insert({
@@ -408,7 +417,8 @@ async function recordScheduledCall({ participantId, sessionNumber, scheduledAt, 
       session_number: sessionNumber,
       scheduled_at: scheduledAt,
       vapi_call_id: vapiCallId,
-      status: "sent"
+      status: "sent",
+      name_at_call: nameAtCall || null
     });
   if (error) console.error("recordScheduledCall failed:", error.message);
 }
@@ -815,11 +825,17 @@ app.post("/start-call", async (req, res) => {
       priorSessionsContext
     });
 
+    // Use the SUBMITTED name (this call's name), not whatever happens to
+    // be stored on participants.name from a prior call. A blank submission
+    // means PARTICIPANT_NAME="" for this call, which skips the identity
+    // check. This also keeps the per-row dashboard display accurate.
+    const submittedName = (name || "").trim();
+
     const variableValues = buildVariableValues({
       activeSession: sessionNumber,
       priorSessionsContext,
       isCallback: false,
-      participantName: participant.name,
+      participantName: submittedName,
       country: inferCountryFromPhone(customerNumber)
     });
 
@@ -837,7 +853,7 @@ app.post("/start-call", async (req, res) => {
       scheduledUtcIso = utcDate.toISOString();
     }
 
-    const hasName = Boolean((participant.name || "").trim());
+    const hasName = Boolean(submittedName);
 
     let vapiCallId = null;
     let vapiStatus = null;
@@ -871,12 +887,16 @@ app.post("/start-call", async (req, res) => {
     // Record a scheduled_calls row for the operator dashboard, regardless of
     // whether this is an immediate or future-scheduled dial. Immediate calls
     // use now() as scheduled_at so they still appear in the table view.
+    // The submitted name is snapshotted onto the row so the dashboard's
+    // Name column reflects what was submitted for THIS call — not a name
+    // pulled from a different attempt on the same phone.
     try {
       await recordScheduledCall({
         participantId: participant.id,
         sessionNumber,
         scheduledAt: scheduledUtcIso || new Date().toISOString(),
-        vapiCallId
+        vapiCallId,
+        nameAtCall: submittedName
       });
     } catch (e) {
       console.error("Failed to record scheduled_calls row:", e);
@@ -924,7 +944,7 @@ app.get("/scheduled-calls", async (req, res) => {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const { data: scheduled, error: schedErr } = await supabase
       .from("scheduled_calls")
-      .select("id, scheduled_at, session_number, vapi_call_id, participant_id, status, created_at")
+      .select("id, scheduled_at, session_number, vapi_call_id, participant_id, status, created_at, name_at_call")
       .gt("scheduled_at", sevenDaysAgo)
       .neq("status", "cancelled")
       .order("scheduled_at", { ascending: true });
@@ -997,11 +1017,14 @@ app.get("/scheduled-calls", async (req, res) => {
       // the call was placed/scheduled but no outcome recorded yet — show
       // as "scheduled" in the dashboard.
       const callStatus = s.status === "sent" ? "scheduled" : s.status;
+      // The Name column comes from the per-row snapshot, not the
+      // participants table. Old rows that pre-date the name_at_call
+      // column will show blank; that's intentional.
       return {
         scheduledCallId: s.id,
         scheduledAt: s.scheduled_at,
         phoneNumber: p.phone_number || null,
-        name: p.name || null,
+        name: s.name_at_call || null,
         sessionNumber: s.session_number,
         vapiCallId: s.vapi_call_id,
         callStatus,
@@ -1304,7 +1327,8 @@ app.post("/vapi", async (req, res) => {
               participantId: p.id,
               sessionNumber: currentSession,
               scheduledAt: utcTarget.toISOString(),
-              vapiCallId: scheduled?.id
+              vapiCallId: scheduled?.id,
+              nameAtCall: participantName
             });
           }
         } catch (e) {
@@ -1404,7 +1428,8 @@ app.post("/vapi", async (req, res) => {
               participantId: p.id,
               sessionNumber: currentSession,
               scheduledAt: utcTarget.toISOString(),
-              vapiCallId: scheduled?.id
+              vapiCallId: scheduled?.id,
+              nameAtCall: participantName
             });
             await supabase
               .from("sessions")
@@ -1551,7 +1576,8 @@ app.post("/vapi", async (req, res) => {
               participantId: p.id,
               sessionNumber: nextSession,
               scheduledAt: utcTarget.toISOString(),
-              vapiCallId: scheduled?.id
+              vapiCallId: scheduled?.id,
+              nameAtCall: participantName
             });
           }
         } catch (e) {
