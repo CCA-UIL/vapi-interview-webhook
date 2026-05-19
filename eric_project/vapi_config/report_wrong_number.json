@@ -1,0 +1,24 @@
+{
+  "type": "function",
+  "async": false,
+  "function": {
+    "name": "report_wrong_number",
+    "description": "Use ONLY when the call has reached a person who is NOT the intended participant AND the number is NOT the right number for the intended participant (i.e., this is a wrong number). The tool will speak a brief apology and end the call, and the call will be marked as a wrong number for the operator. Do NOT use this tool if the person who answered confirms the number is correct (use schedule_first_attempt instead in that case). Do NOT use this tool when the intended participant themselves answers.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  "messages": [
+    {
+      "type": "request-start",
+      "content": ""
+    },
+    {
+      "type": "request-complete",
+      "content": "Sorry to have bothered you. Goodbye.",
+      "endCallAfterSpokenEnabled": true
+    }
+  ]
+}

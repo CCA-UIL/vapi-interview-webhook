@@ -241,7 +241,7 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 - `startSpeakingPlan.waitSeconds: 0.3`, `stopSpeakingPlan.numWords: 3, voiceSeconds: 0.3`
 - `endCallFunctionEnabled: true`
 - `serverMessages: ["function-call", "tool-calls", "status-update", "hang", "end-of-call-report", "speech-update"]`. `speech-update` is required for the wrap-up flow to detect participant-stop events.
-- `model.toolIds`: both `schedule_callback` (`1349e77b-...`) and `schedule_next_session` (`93497b3c-...`)
+- `model.toolIds`: `schedule_callback` (`1349e77b-...`), `schedule_next_session` (`93497b3c-...`), `report_wrong_number` (`528b1b63-...`), `schedule_first_attempt` (`a9aa8752-...`)
 
 ### `schedule_callback` tool (reusable, Vapi org-level)
 
@@ -250,6 +250,14 @@ Snapshot at `eric_project/vapi_config/schedule_callback.json`. Used when the par
 - Description explicitly forbids using it for next-session scheduling.
 - `messages[0]`: `{type: "request-start", content: ""}` — empty content suppresses the model's filler.
 - `messages[1]`: `{type: "request-complete", content: "Got it. I'll call you {{suggestedTime}}. Take care.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends. Wording is intentionally neutral (no "back") so it sounds correct even when the server intercept redirects this invocation to schedule_next_session.
+
+### `report_wrong_number` tool (reusable, Vapi org-level)
+
+Snapshot at `eric_project/vapi_config/report_wrong_number.json`. Used in Session 1's Step 0 identity-check flow when the third party who answered confirms this is NOT the right number for the intended participant. No parameters. `request-complete` content: `"Sorry to have bothered you. Goodbye."` with `endCallAfterSpokenEnabled: true`. Server-side handler sets `sessions.status='wrong_number'` for the participant's Session 1 row.
+
+### `schedule_first_attempt` tool (reusable, Vapi org-level)
+
+Snapshot at `eric_project/vapi_config/schedule_first_attempt.json`. Used in Session 1's Step 0 identity-check flow when the third party confirms it IS the right number but the participant is unavailable and a time has been agreed for trying again. Parameters: `suggestedTime` (required, concrete). Distinct from `schedule_callback` because the participant has NEVER been on the line yet — the rescheduled call must give them the full introduction. The server schedules the rescheduled call with `isCallback=false` (NOT true like `schedule_callback`) and `priorSessionsContext=""`, so the rescheduled call enters `session_1_initial_call_flow` and gives the full intro. Sets `sessions.status='rescheduled_unreached'`. `request-complete` content: `"OK, I will try again at the agreed time. Thank you. Goodbye."` with `endCallAfterSpokenEnabled: true`.
 
 ### `schedule_next_session` tool (reusable, Vapi org-level)
 
@@ -322,6 +330,8 @@ Recorded so future iterations don't relearn these the hard way.
 - **Country localization is server-derived.** The server uses `libphonenumber-js` to parse the participant's phone number, maps the ISO alpha-2 country code to an English country name (lookup table for KE/NG/GH/TZ/UG/ZA/RW/ET/US/GB/CA; ISO code as fallback for unmapped countries), and passes it as the `COUNTRY` runtime variable. The prompt's `<localization>` block uses `{{COUNTRY}}` to adapt Imani's behaviour. No country-specific knowledge packs are baked in for MVP — relies on the model's training-data knowledge of country-specific English.
 - **Operator web form at `/`.** Static HTML in `public/index.html` served by the same Render service. Remote operators can trigger calls via a browser instead of curl or Postman. `/start-call` is protected by `X-API-Key` header (env var `START_CALL_API_KEY`); the form prompts for the key once and stores it in browser localStorage.
 - **Read-back-and-confirm before scheduling.** Before invoking either `schedule_callback` or `schedule_next_session`, Imani must read the proposed time back to the participant ("So I will call you back tomorrow at 3pm, OK?") and wait for explicit confirmation. Specified in three prompt locations: `<session_1_initial_call_flow>` Step 2 callback sub-flow, `<session_1_callback_flow>` Step 3 reschedule branch (which references the Step 2 sub-flow), and the new top-level `<next_session_scheduling>` block (which governs end-of-session scheduling for Sessions 1 and 2). The block is not stripped by `loadPromptForCall` — it applies to every session. The tool's `request-complete` message remains the final goodbye that's spoken after Vapi receives the tool invocation.
+- **Identity check at Session 1 start.** When `PARTICIPANT_NAME` is non-empty, Imani's first utterance is *"Hello, am I speaking with [full name]?"* — no introduction yet. Branches: (a) confirmed → full intro → consent → screening → interview; (b) not them, right number, person not available → ask better time → `schedule_first_attempt` → rescheduled call gets full intro (IS_CALLBACK=false); (c) not them, wrong number → `report_wrong_number` → call ends, marked as wrong number in Supabase. Third party asking "who are you / why?" gets a one-sentence honest answer about being a robot researcher and the participant having agreed to take part. `PARTICIPANT_NAME` arrives in **title + first + last** form (e.g., "Mr. Emeka Obi") and is used verbatim in greetings throughout the call. Sessions 2 and 3 greet by full name but skip the identity-check (participant already confirmed in Session 1). Operator dashboard input field hints at this format.
+- **New `sessions.status` values.** In addition to `scheduled`, `in_progress`, `completed`: `wrong_number` (set by `report_wrong_number` tool), `rescheduled_unreached` (set by `schedule_first_attempt` tool — the participant has not yet been reached).
 
 ## Iteration History — Lessons Learned (Don't Repeat These)
 

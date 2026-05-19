@@ -1,0 +1,31 @@
+{
+  "type": "function",
+  "async": false,
+  "function": {
+    "name": "schedule_first_attempt",
+    "description": "Use ONLY when the call has reached someone other than the intended participant AND the number IS the right number for the participant (e.g., a family member answered), AND a concrete time has been agreed for trying the call again. The tool will speak a goodbye and end the call, and a fresh first-attempt call will be scheduled at the suggested time (the participant will hear the full introduction when they answer, since they have not yet spoken to Imani). CRITICAL: Only invoke this tool once you have heard a CONCRETE time from the third party. If the suggested time is vague ('a few hours', 'this evening'), translate it to a concrete time using the vague-time-handling rules and have the third party confirm before invoking.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "suggestedTime": {
+          "type": "string",
+          "description": "Concrete natural-language time. Must be a specific time, not a question or vague placeholder."
+        }
+      },
+      "required": [
+        "suggestedTime"
+      ]
+    }
+  },
+  "messages": [
+    {
+      "type": "request-start",
+      "content": ""
+    },
+    {
+      "type": "request-complete",
+      "content": "OK, I will try again at the agreed time. Thank you. Goodbye.",
+      "endCallAfterSpokenEnabled": true
+    }
+  ]
+}

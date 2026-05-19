@@ -1054,6 +1054,109 @@ app.post("/vapi", async (req, res) => {
         });
       }
 
+      // ---- report_wrong_number: third party confirmed this is a wrong number ----
+      if (fn?.name === "report_wrong_number") {
+        const customerNumber = message?.call?.customer?.number;
+        try {
+          const { data: p } = await supabase
+            .from("participants")
+            .select("id")
+            .eq("phone_number", customerNumber)
+            .maybeSingle();
+          if (p?.id) {
+            const liveVars = message?.call?.assistantOverrides?.variableValues || {};
+            const currentSession = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
+            await supabase
+              .from("sessions")
+              .update({ status: "wrong_number" })
+              .eq("participant_id", p.id)
+              .eq("session_number", currentSession);
+            console.log("Marked session as wrong_number", { participantId: p.id, sessionNumber: currentSession });
+          }
+        } catch (e) {
+          console.error("report_wrong_number persistence failed:", e);
+        }
+        return res.json({
+          results: [{
+            toolCallId: toolCall.toolCallId || toolCall.id,
+            result: "Wrong-number outcome recorded."
+          }]
+        });
+      }
+
+      // ---- schedule_first_attempt: third party scheduled a callback because ----
+      // ---- the intended participant was not available at this attempt.     ----
+      // ---- The rescheduled call must be a fresh first-attempt (full intro) ----
+      // ---- so IS_CALLBACK is false on the rescheduled call.                ----
+      if (fn?.name === "schedule_first_attempt") {
+        const { suggestedTime } = fn.arguments || {};
+        const customerNumber = message?.call?.customer?.number;
+        const timezone = inferTimezone(customerNumber);
+        let parsed = parseSuggestedTimeToLocalDate({ suggestedTimeText: suggestedTime, timezone });
+        if (!parsed) {
+          console.warn("schedule_first_attempt: suggestedTime unparseable, falling back to 1-hour default", { suggestedTime });
+          parsed = parseSuggestedTimeToLocalDate({ suggestedTimeText: "in 1 hour", timezone });
+          if (!parsed) {
+            return res.json({
+              results: [{ toolCallId: toolCall.id, result: "Could not parse suggested time" }]
+            });
+          }
+        }
+        const { targetLocal, localNow, nowUtc } = parsed;
+        const offsetMs = localNow.getTime() - nowUtc.getTime();
+        const utcTarget = new Date(targetLocal.getTime() - offsetMs);
+
+        const assistantIdForCallback =
+          message?.call?.assistantId || message?.assistant?.id || ASSISTANT_ID;
+
+        const liveVars = message?.call?.assistantOverrides?.variableValues || {};
+        const currentSession = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
+        const participantName = liveVars.PARTICIPANT_NAME || "";
+
+        const scheduled = await scheduleVapiCallback({
+          assistantId: assistantIdForCallback,
+          customerNumber,
+          earliestAtIso: utcTarget.toISOString(),
+          variableValues: buildVariableValues({
+            activeSession: currentSession,
+            priorSessionsContext: "",
+            isCallback: false,
+            participantName,
+            country: inferCountryFromPhone(customerNumber)
+          })
+        });
+
+        try {
+          const { data: p } = await supabase
+            .from("participants")
+            .select("id")
+            .eq("phone_number", customerNumber)
+            .maybeSingle();
+          if (p?.id) {
+            await recordScheduledCall({
+              participantId: p.id,
+              sessionNumber: currentSession,
+              scheduledAt: utcTarget.toISOString(),
+              vapiCallId: scheduled?.id
+            });
+            await supabase
+              .from("sessions")
+              .update({ status: "rescheduled_unreached" })
+              .eq("participant_id", p.id)
+              .eq("session_number", currentSession);
+          }
+        } catch (e) {
+          console.error("schedule_first_attempt persistence failed:", e);
+        }
+
+        return res.json({
+          results: [{
+            toolCallId: toolCall.toolCallId || toolCall.id,
+            result: `Scheduled fresh first-attempt call for ${suggestedTime}.`
+          }]
+        });
+      }
+
       // ---- schedule_next_session: schedule the next session of this study ----
       if (fn?.name === "schedule_next_session") {
         const { suggestedTime } = fn.arguments || {};
