@@ -1739,6 +1739,22 @@ app.post("/vapi", async (req, res) => {
         });
       }
 
+      // ---- prescreening_complete: end-of-prescreening close + hang up ----
+      // The tool itself carries the verbatim close in request-complete +
+      // endCallAfterSpokenEnabled. Server just acknowledges the invocation
+      // so Vapi proceeds with the request-complete + auto-hangup. Without
+      // this handler the webhook would never respond and the model would
+      // loop, re-invoking prescreening_complete repeatedly until eventually
+      // giving up with a plain endCall.
+      if (fn?.name === "prescreening_complete") {
+        return res.json({
+          results: [{
+            toolCallId: toolCall.toolCallId || toolCall.id,
+            result: "Closing call."
+          }]
+        });
+      }
+
       // ---- report_wrong_number: third party confirmed this is a wrong number ----
       if (fn?.name === "report_wrong_number") {
         const customerNumber = message?.call?.customer?.number;
