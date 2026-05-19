@@ -423,7 +423,7 @@ const PROMPT_PATH = path.join(
   "Imani_system_prompt_phase1.xml"
 );
 
-function loadPromptForCall({ isCallback, activeSession = 1 }) {
+function loadPromptForCall({ isCallback, activeSession = 1, hasName = false }) {
   let prompt = fs.readFileSync(PROMPT_PATH, "utf8");
   // Regex must anchor to top-level tags (column 0). Both flow blocks
   // contain inline prose references to other flows' tag names (e.g.,
@@ -438,6 +438,18 @@ function loadPromptForCall({ isCallback, activeSession = 1 }) {
       `<${tag}>(omitted: ${reason})</${tag}>`
     );
   };
+
+  // The step_0_identity_check block lives INSIDE session_1_initial_call_flow,
+  // but its open and close tags are line-anchored at the leading whitespace
+  // they were authored with. Anchor with optional leading whitespace.
+  const stripNestedBlock = (tag, reason) => {
+    const re = new RegExp(`^\\s*<${tag}>[\\s\\S]*?^\\s*</${tag}>\\s*$`, "m");
+    prompt = prompt.replace(re, `<${tag}>(omitted: ${reason})</${tag}>`);
+  };
+
+  if (!hasName) {
+    stripNestedBlock("step_0_identity_check", "no participant name provided");
+  }
 
   if (activeSession === 1) {
     // Session 1: choose initial vs callback based on IS_CALLBACK.
@@ -487,24 +499,25 @@ async function getModelTemplate() {
   return cachedModelTemplate;
 }
 
-async function buildModelOverride({ isCallback, activeSession = 1 }) {
+async function buildModelOverride({ isCallback, activeSession = 1, hasName = false }) {
   const template = await getModelTemplate();
   return {
     ...template,
-    messages: [{ role: "system", content: loadPromptForCall({ isCallback, activeSession }) }]
+    messages: [{ role: "system", content: loadPromptForCall({ isCallback, activeSession, hasName }) }]
   };
 }
 
 async function startVapiCall({ assistantId, customerNumber, variableValues }) {
   const isCallback = variableValues?.IS_CALLBACK === "true";
   const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
+  const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
     customer: { number: customerNumber },
     assistantOverrides: {
       variableValues,
-      model: await buildModelOverride({ isCallback, activeSession })
+      model: await buildModelOverride({ isCallback, activeSession, hasName })
     }
   });
 }
@@ -517,7 +530,15 @@ async function startVapiCall({ assistantId, customerNumber, variableValues }) {
 const QSTASH_CALLBACK_THRESHOLD_MINUTES = parseInt(process.env.QSTASH_CALLBACK_THRESHOLD_MINUTES || "10", 10);
 
 async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso, variableValues }) {
-  const callbackVars = { ...variableValues, IS_CALLBACK: "true" };
+  // Honor whatever IS_CALLBACK and ACTIVE_SESSION the caller supplied via
+  // variableValues. schedule_callback passes IS_CALLBACK=true (rescheduled
+  // call should brief-acknowledge); schedule_first_attempt passes
+  // IS_CALLBACK=false (participant has never been on the line, needs the
+  // full intro). Previously this function hardcoded both to "true" / 1,
+  // which silently overrode the schedule_first_attempt intent.
+  const isCallback = variableValues?.IS_CALLBACK === "true";
+  const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
+  const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
   const earliestMs = new Date(earliestAtIso).getTime();
   const delayMinutes = (earliestMs - Date.now()) / 60000;
 
@@ -527,10 +548,10 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
     await qstashScheduleAt({
       url: `${RENDER_BASE_URL}/timing/fire-callback`,
       notBeforeSeconds: Math.floor(earliestMs / 1000),
-      body: { assistantId, customerNumber, variableValues: callbackVars, isCallback: true }
+      body: { assistantId, customerNumber, variableValues, isCallback }
     });
     console.log("Short-fuse callback queued via QStash", {
-      customerNumber, earliestAtIso, delayMinutes: delayMinutes.toFixed(2)
+      customerNumber, earliestAtIso, delayMinutes: delayMinutes.toFixed(2), isCallback, activeSession
     });
     return { id: null, status: "qstash-scheduled", earliestAt: earliestAtIso };
   }
@@ -542,10 +563,8 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
     customer: { number: customerNumber },
     schedulePlan: { earliestAt: earliestAtIso },
     assistantOverrides: {
-      variableValues: callbackVars,
-      // schedule_callback is a Session 1 callback (IS_CALLBACK=true), so
-      // activeSession stays 1.
-      model: await buildModelOverride({ isCallback: true, activeSession: 1 })
+      variableValues,
+      model: await buildModelOverride({ isCallback, activeSession, hasName })
     }
   });
 }
@@ -1438,15 +1457,17 @@ app.post("/timing/fire-callback", async (req, res) => {
     }
     // isCallback controls Session 1 initial-vs-callback choice; activeSession
     // controls which session's opening protocol is kept in the assembled
-    // prompt (and strips all the others).
+    // prompt (and strips all the others). hasName controls whether the
+    // Session 1 Step 0 identity-check block is kept.
     const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
+    const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
     const result = await vapiPost("/call", {
       assistantId,
       phoneNumberId: PHONE_NUMBER_ID,
       customer: { number: customerNumber },
       assistantOverrides: {
         variableValues,
-        model: await buildModelOverride({ isCallback, activeSession })
+        model: await buildModelOverride({ isCallback, activeSession, hasName })
       }
     });
     console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber, isCallback, activeSession });
