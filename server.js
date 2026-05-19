@@ -1095,7 +1095,7 @@ app.post("/start-call", async (req, res) => {
 /**
  * POST /start-prescreening
  * Body: { customerNumber (req), name?, scheduledAtLocal? }
- * Places a pre-screening call using the prescreening prompt and a
+ * Places a screening call using the screening prompt and a
  * structured-data extraction schema. The participant answers 12 short
  * questions; the analysis runs at end-of-call and the extracted JSON is
  * upserted into the prescreening_responses table for the human analyst.

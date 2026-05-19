@@ -218,7 +218,7 @@
 
   <div class="tabs">
     <button type="button" id="tab-btn-interview" class="active">Interview operator</button>
-    <button type="button" id="tab-btn-prescreening">Pre-screening</button>
+    <button type="button" id="tab-btn-prescreening">Screening</button>
   </div>
 
 <div class="tab-panel active" id="tab-interview">
@@ -276,7 +276,7 @@
 
 <div class="tab-panel" id="tab-prescreening">
   <p class="intro">
-    Pre-screening calls collect short answers to 12 questions and store them
+    Screening calls collect short answers to 12 questions and store them
     for an analyst to review. Click a row to send the participant to the
     Interview operator tab with phone + name pre-filled.
   </p>
@@ -288,7 +288,7 @@
     <input type="tel" id="pre-phone" placeholder="+2348037642802" style="padding:0.4rem 0.55rem;border:1px solid #d1d5db;border-radius:6px;font-family:inherit;font-size:0.9rem;flex:0 0 180px;">
     <input type="text" id="pre-name"  placeholder="Mr. Emeka Obi"   style="padding:0.4rem 0.55rem;border:1px solid #d1d5db;border-radius:6px;font-family:inherit;font-size:0.9rem;flex:0 0 200px;">
     <input type="datetime-local" id="pre-schedule" style="padding:0.4rem 0.55rem;border:1px solid #d1d5db;border-radius:6px;font-family:inherit;font-size:0.9rem;flex:0 0 200px;" title="Blank = call immediately">
-    <button type="button" id="pre-call-btn" class="primary" style="padding:0.4rem 0.9rem;background:#2563eb;color:white;border:none;border-radius:6px;font-size:0.9rem;font-weight:500;font-family:inherit;cursor:pointer;">Pre-screen call</button>
+    <button type="button" id="pre-call-btn" class="primary" style="padding:0.4rem 0.9rem;background:#2563eb;color:white;border:none;border-radius:6px;font-size:0.9rem;font-weight:500;font-family:inherit;cursor:pointer;">Screening call</button>
     <button type="button" id="pre-refresh-btn">Refresh</button>
     <button type="button" id="pre-export-btn">Download .xlsx</button>
   </div>
@@ -716,7 +716,7 @@
     tabBtnInterview.addEventListener('click', () => switchTab('interview'));
     tabBtnPrescreening.addEventListener('click', () => switchTab('prescreening'));
 
-    // ===== Pre-screening =====
+    // ===== Screening =====
     const preStatusEl  = document.getElementById('pre-status');
     const preBodyEl    = document.getElementById('pre-body');
     const preTableEl   = document.getElementById('pre-table');
@@ -765,7 +765,7 @@
       preBodyEl.innerHTML = '';
       if (sorted.length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="20" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No pre-screening responses yet. Make a pre-screen call above.</td>';
+        tr.innerHTML = '<td colspan="20" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No screening responses yet. Make a screening call above.</td>';
         preBodyEl.appendChild(tr);
         return;
       }
@@ -864,7 +864,7 @@
       const apikey = apikeyEl.value.trim();
       if (!apikey) { setPreStatus('err', 'Enter API key first.'); return; }
       const who = r.name || r.phoneNumber || 'this row';
-      if (!confirm('Delete the pre-screening row for ' + who + '? This is permanent and removes the response from the dashboard. The participant record itself is kept.')) return;
+      if (!confirm('Delete the screening row for ' + who + '? This is permanent and removes the response from the dashboard. The participant record itself is kept.')) return;
       try {
         const resp = await fetch('/prescreening-responses/' + encodeURIComponent(r.id), {
           method: 'DELETE',
@@ -926,7 +926,7 @@
       if (!phone.startsWith('+')) { setPreStatus('err', 'Phone must start with + and include country code.'); return; }
       if (!apikey) { setPreStatus('err', 'Enter API key in the Interview tab first.'); return; }
       preCallBtn.disabled = true;
-      setPreStatus('info', scheduledAtLocal ? 'Scheduling pre-screen call...' : 'Dialling pre-screen call...');
+      setPreStatus('info', scheduledAtLocal ? 'Scheduling screening call...' : 'Dialling screening call...');
       try {
         const resp = await fetch('/start-prescreening', {
           method: 'POST',

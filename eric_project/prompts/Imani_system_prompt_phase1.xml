@@ -485,7 +485,7 @@ about it.
 </session_1_callback_flow>
 
 <screening_logic>
-  (Removed — screening is now handled by a separate pre-screening call
+  (Removed — screening is now handled by a separate screening call
   before Session 1 is scheduled. The main interview begins directly
   with Phase 1, Milestone 1.1 after consent / availability is confirmed.)
 </screening_logic>
