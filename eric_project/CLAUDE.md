@@ -229,6 +229,7 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 | `FORCE_CLOSE_OFFSET_SECONDS` | 30 (default) |
 | `QSTASH_CALLBACK_THRESHOLD_MINUTES` | 10 (default) |
 | `SCREENING_QUESTIONS_JSON` | JSON array of `{id, question, pass_answer}` |
+| `CONSENT_STATEMENT_ENABLED` | `"true"` (default) or `"false"`. When `"true"`, Imani reads the formal consent statement and waits for an explicit yes/no before screening. When `"false"`, screening starts immediately after the availability check. Read fresh per call (no restart needed). |
 | `SUPABASE_URL` | Supabase project URL (no `/rest/v1` suffix) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role JWT (server-side only, bypasses RLS) |
 

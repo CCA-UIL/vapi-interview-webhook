@@ -494,7 +494,7 @@ const PROMPT_PATH = path.join(
   "Imani_system_prompt_phase1.xml"
 );
 
-function loadPromptForCall({ isCallback, activeSession = 1, hasName = false }) {
+function loadPromptForCall({ isCallback, activeSession = 1, hasName = false, consentEnabled = true }) {
   let prompt = fs.readFileSync(PROMPT_PATH, "utf8");
   // Regex must anchor to top-level tags (column 0). Both flow blocks
   // contain inline prose references to other flows' tag names (e.g.,
@@ -520,6 +520,20 @@ function loadPromptForCall({ isCallback, activeSession = 1, hasName = false }) {
 
   if (!hasName) {
     stripNestedBlock("step_0_identity_check", "no participant name provided");
+  }
+
+  // Consent step gate. The prompt contains both <consent_branch_enabled>
+  // and <consent_branch_disabled> blocks at every place the consent step
+  // could fire (Session 1 initial flow + callback flow). Strip the
+  // inactive variant — and there can be multiple, so use gm.
+  const stripNestedBlockAll = (tag, reason) => {
+    const re = new RegExp(`^\\s*<${tag}>[\\s\\S]*?^\\s*</${tag}>\\s*$`, "gm");
+    prompt = prompt.replace(re, `<${tag}>(omitted: ${reason})</${tag}>`);
+  };
+  if (consentEnabled) {
+    stripNestedBlockAll("consent_branch_disabled", "consent step is enabled");
+  } else {
+    stripNestedBlockAll("consent_branch_enabled", "consent step is disabled via CONSENT_STATEMENT_ENABLED env var");
   }
 
   if (activeSession === 1) {
@@ -570,11 +584,20 @@ async function getModelTemplate() {
   return cachedModelTemplate;
 }
 
+// CONSENT_STATEMENT_ENABLED is read fresh per call so toggling the env var
+// in Render takes effect on the next dial without a restart. Defaults to
+// true (consent step on) when the variable is unset.
+function consentStatementEnabled() {
+  return String(process.env.CONSENT_STATEMENT_ENABLED || "true").toLowerCase() !== "false";
+}
+
 async function buildModelOverride({ isCallback, activeSession = 1, hasName = false }) {
   const template = await getModelTemplate();
   return {
     ...template,
-    messages: [{ role: "system", content: loadPromptForCall({ isCallback, activeSession, hasName }) }]
+    messages: [{ role: "system", content: loadPromptForCall({
+      isCallback, activeSession, hasName, consentEnabled: consentStatementEnabled()
+    }) }]
   };
 }
 
