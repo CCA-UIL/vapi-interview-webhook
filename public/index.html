@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Imani — Start Interview Call</title>
+  <title>Imani — Interview Call Operator</title>
   <style>
     * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      max-width: 480px;
+      max-width: 1280px;
       margin: 2rem auto;
       padding: 0 1.5rem;
       color: #1f2937;
@@ -16,153 +16,347 @@
     }
     h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
     p.intro { color: #6b7280; margin-top: 0; margin-bottom: 1.5rem; font-size: 0.95rem; }
-    label {
-      display: block;
-      margin-top: 1rem;
-      font-weight: 500;
-      font-size: 0.9rem;
+    .toolbar {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin-bottom: 1rem; flex-wrap: wrap;
     }
-    .hint { font-weight: 400; color: #6b7280; font-size: 0.85rem; }
-    input {
-      width: 100%;
-      padding: 0.55rem 0.7rem;
-      margin-top: 0.3rem;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      font-size: 1rem;
-      font-family: inherit;
+    .toolbar .apikey {
+      flex: 1; min-width: 280px;
+      display: flex; align-items: center; gap: 0.5rem;
     }
-    input:focus { outline: 2px solid #2563eb; outline-offset: -1px; border-color: transparent; }
-    button {
-      width: 100%;
-      margin-top: 1.5rem;
-      padding: 0.7rem;
-      background: #2563eb;
-      color: white;
-      border: none;
-      border-radius: 6px;
-      font-size: 1rem;
-      font-weight: 600;
-      cursor: pointer;
+    .toolbar label { font-size: 0.9rem; font-weight: 500; }
+    .toolbar input[type=password] {
+      flex: 1; padding: 0.4rem 0.55rem;
+      border: 1px solid #d1d5db; border-radius: 6px;
+      font-size: 0.9rem; font-family: inherit;
     }
-    button:disabled { background: #9ca3af; cursor: not-allowed; }
-    button:not(:disabled):hover { background: #1d4ed8; }
-    #status {
-      margin-top: 1.25rem;
-      padding: 0.75rem 1rem;
+    .toolbar button {
+      padding: 0.4rem 0.75rem;
+      background: #e5e7eb; color: #1f2937;
+      border: none; border-radius: 6px;
+      font-size: 0.9rem; font-weight: 500;
+      cursor: pointer; font-family: inherit;
+    }
+    .toolbar button:hover:not(:disabled) { background: #d1d5db; }
+    .toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .toolbar button.primary { background: #2563eb; color: white; }
+    .toolbar button.primary:hover:not(:disabled) { background: #1d4ed8; }
+    #global-status {
+      padding: 0.6rem 0.9rem;
       border-radius: 6px;
       font-size: 0.9rem;
       display: none;
+      margin-bottom: 1rem;
       white-space: pre-wrap;
     }
-    #status.ok { background: #d1fae5; color: #065f46; display: block; }
-    #status.err { background: #fee2e2; color: #991b1b; display: block; }
-    #status.info { background: #dbeafe; color: #1e40af; display: block; }
-    .scheduled-section { margin-top: 2.5rem; }
-    .scheduled-section h2 { font-size: 1.15rem; margin-bottom: 0.4rem; }
-    .scheduled-section .row-head {
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 0.5rem; margin-bottom: 0.5rem;
+    #global-status.ok { background: #d1fae5; color: #065f46; display: block; }
+    #global-status.err { background: #fee2e2; color: #991b1b; display: block; }
+    #global-status.info { background: #dbeafe; color: #1e40af; display: block; }
+    table.calls {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      table-layout: fixed;
     }
-    .scheduled-section button.refresh {
-      width: auto; margin: 0; padding: 0.3rem 0.7rem; font-size: 0.85rem;
-      font-weight: 500; background: #e5e7eb; color: #1f2937;
-    }
-    .scheduled-section button.refresh:hover:not(:disabled) { background: #d1d5db; }
-    #sched-status {
-      font-size: 0.85rem; color: #6b7280; margin: 0 0 0.5rem 0;
-    }
-    table.scheduled {
-      width: 100%; border-collapse: collapse; font-size: 0.9rem;
-    }
-    table.scheduled th, table.scheduled td {
+    table.calls th, table.calls td {
       border-bottom: 1px solid #e5e7eb;
-      padding: 0.5rem 0.4rem; text-align: left;
+      padding: 0.5rem 0.4rem;
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
     }
-    table.scheduled th {
-      font-weight: 600; color: #374151; background: #f9fafb;
+    table.calls th {
+      font-weight: 600;
+      color: #374151;
+      background: #f9fafb;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
     }
-    table.scheduled td.empty {
-      text-align: center; color: #6b7280; padding: 1rem 0.4rem;
+    table.calls col.col-phone    { width: 13%; }
+    table.calls col.col-name     { width: 14%; }
+    table.calls col.col-schedule { width: 16%; }
+    table.calls col.col-when     { width: 13%; }
+    table.calls col.col-session  { width: 6%;  }
+    table.calls col.col-status   { width: 9%;  }
+    table.calls col.col-notes    { width: 13%; }
+    table.calls col.col-actions  { width: 16%; }
+    table.calls input[type=tel],
+    table.calls input[type=text],
+    table.calls input[type=datetime-local] {
+      width: 100%;
+      padding: 0.35rem 0.45rem;
+      border: 1px solid #d1d5db;
+      border-radius: 5px;
+      font-size: 0.88rem;
+      font-family: inherit;
+      background: white;
+    }
+    table.calls td.read-only {
+      color: #4b5563;
+      font-size: 0.85rem;
+    }
+    table.calls td.notes {
+      color: #4b5563;
+      font-style: italic;
+      font-size: 0.85rem;
+    }
+    table.calls .row-actions {
+      display: flex; gap: 0.4rem; flex-wrap: wrap;
+    }
+    table.calls .row-actions button {
+      padding: 0.35rem 0.55rem;
+      border: none; border-radius: 5px;
+      font-size: 0.82rem; font-weight: 500;
+      cursor: pointer; font-family: inherit;
+    }
+    table.calls .row-actions button.call {
+      background: #2563eb; color: white;
+    }
+    table.calls .row-actions button.call:hover:not(:disabled) { background: #1d4ed8; }
+    table.calls .row-actions button.delete {
+      background: #fee2e2; color: #991b1b;
+    }
+    table.calls .row-actions button.delete:hover:not(:disabled) { background: #fecaca; }
+    table.calls .row-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+    .badge.draft       { background: #f3f4f6; color: #4b5563; }
+    .badge.scheduled   { background: #dbeafe; color: #1e40af; }
+    .badge.in_progress { background: #fef3c7; color: #92400e; }
+    .badge.completed   { background: #d1fae5; color: #065f46; }
+    .badge.cancelled   { background: #f3f4f6; color: #6b7280; }
+    .badge.bad         { background: #fee2e2; color: #991b1b; }
+    tr.draft-row td { background: #fafafa; }
+    tr.completed-row td.read-only { color: #6b7280; }
+    .footnote {
+      color: #6b7280; font-size: 0.83rem; margin: 0.8rem 0 0 0;
     }
   </style>
 </head>
 <body>
-  <h1>Start an interview call</h1>
-  <p class="intro">Dial an outbound call to a participant. Imani will introduce herself, run screening, and conduct Session 1.</p>
+  <h1>Interview call operator dashboard</h1>
+  <p class="intro">
+    Each row is a call. Fill in phone (with country code) and optionally a name and a scheduled time, then click <strong>Call</strong>.
+    Leave the schedule blank to dial immediately.
+    Scheduled times are interpreted in the participant's local timezone (inferred from the phone country code).
+  </p>
 
-  <form id="call-form">
-    <label>
-      Participant phone number
-      <span class="hint">(international format, with country code, e.g. <code>+254712345678</code>)</span>
-      <input type="tel" id="phone" required placeholder="+12025550100" autocomplete="off">
-    </label>
-
-    <label>
-      Participant name <span class="hint">(optional; title + first + last, e.g. <code>Mr. Emeka Obi</code>. Used verbatim by Imani for the identity check at call start.)</span>
-      <input type="text" id="name" placeholder="e.g. Mr. Emeka Obi" autocomplete="off">
-    </label>
-
-    <label>
-      API key
-      <span class="hint">(provided to you separately; saved in this browser)</span>
-      <input type="password" id="apikey" required autocomplete="off">
-    </label>
-
-    <button type="submit" id="submit-btn">Start call</button>
-  </form>
-
-  <div id="status"></div>
-
-  <section class="scheduled-section">
-    <div class="row-head">
-      <h2>Scheduled calls (future)</h2>
-      <button type="button" class="refresh" id="refresh-sched-btn">Refresh</button>
+  <div class="toolbar">
+    <div class="apikey">
+      <label for="apikey">API key</label>
+      <input type="password" id="apikey" autocomplete="off" placeholder="X-API-Key">
     </div>
-    <p id="sched-status">Enter API key above to load scheduled calls.</p>
-    <table class="scheduled" id="sched-table" style="display: none;">
-      <thead>
-        <tr>
-          <th>When</th>
-          <th>Phone</th>
-          <th>Session</th>
-        </tr>
-      </thead>
-      <tbody id="sched-body"></tbody>
-    </table>
-  </section>
+    <button type="button" id="add-row-btn">+ Add row</button>
+    <button type="button" id="refresh-btn">Refresh</button>
+  </div>
+
+  <div id="global-status"></div>
+
+  <table class="calls" id="calls-table">
+    <colgroup>
+      <col class="col-phone">
+      <col class="col-name">
+      <col class="col-schedule">
+      <col class="col-when">
+      <col class="col-session">
+      <col class="col-status">
+      <col class="col-notes">
+      <col class="col-actions">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Phone</th>
+        <th>Name</th>
+        <th>Schedule <span style="font-weight:400;color:#6b7280;">(blank = now)</span></th>
+        <th>Scheduled for</th>
+        <th>Session</th>
+        <th>Status</th>
+        <th>Notes</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="calls-body"></tbody>
+  </table>
+
+  <p class="footnote">
+    Names are used verbatim by Imani at call start — prefer the title + first + last form (e.g., <code>Mr. Emeka Obi</code>).
+    Draft rows (light grey background) live only in this browser until you click Call. Submitted rows persist across refreshes.
+  </p>
 
   <script>
-    const form = document.getElementById('call-form');
-    const phoneEl = document.getElementById('phone');
-    const nameEl = document.getElementById('name');
-    const apikeyEl = document.getElementById('apikey');
-    const statusEl = document.getElementById('status');
-    const submitBtn = document.getElementById('submit-btn');
+    const DRAFTS_KEY = 'eric_draft_rows_v1';
+    const APIKEY_STORAGE = 'eric_api_key';
 
-    // Restore API key from this browser's local storage so the user
-    // doesn't have to retype it every time.
-    apikeyEl.value = localStorage.getItem('eric_api_key') || '';
+    const apikeyEl   = document.getElementById('apikey');
+    const addRowBtn  = document.getElementById('add-row-btn');
+    const refreshBtn = document.getElementById('refresh-btn');
+    const statusEl   = document.getElementById('global-status');
+    const tbody      = document.getElementById('calls-body');
+
+    apikeyEl.value = localStorage.getItem(APIKEY_STORAGE) || '';
+    apikeyEl.addEventListener('change', () => {
+      localStorage.setItem(APIKEY_STORAGE, apikeyEl.value.trim());
+      refresh();
+    });
 
     function setStatus(kind, text) {
       statusEl.className = kind;
       statusEl.textContent = text;
     }
+    function clearStatus() {
+      statusEl.className = '';
+      statusEl.textContent = '';
+      statusEl.style.display = 'none';
+    }
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const phone = phoneEl.value.trim();
-      const name = nameEl.value.trim();
+    // ----- Drafts persistence (localStorage) -----
+    function loadDrafts() {
+      try {
+        const raw = localStorage.getItem(DRAFTS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch { return []; }
+    }
+    function saveDrafts(drafts) {
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+    }
+    function newDraftId() {
+      return 'draft-' + Math.random().toString(36).slice(2, 10);
+    }
+
+    // ----- Rendering -----
+    function badgeFor(status) {
+      const known = ['draft','scheduled','in_progress','completed','cancelled'];
+      const bad = ['wrong_number','no_answer','invalid_number','voicemail','busy','no_engagement'];
+      const cls = bad.includes(status) ? 'bad' : (known.includes(status) ? status : 'scheduled');
+      const label = status.replace(/_/g, ' ');
+      return `<span class="badge ${cls}">${label}</span>`;
+    }
+
+    function formatWhen(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: '2-digit',
+        hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    function renderDraftRow(d) {
+      const tr = document.createElement('tr');
+      tr.className = 'draft-row';
+      tr.dataset.kind = 'draft';
+      tr.dataset.id = d.id;
+      tr.innerHTML = `
+        <td><input type="tel" class="f-phone" placeholder="+2348037642802" value="${d.phone || ''}"></td>
+        <td><input type="text" class="f-name" placeholder="Mr. Emeka Obi" value="${d.name || ''}"></td>
+        <td><input type="datetime-local" class="f-schedule" value="${d.scheduledAtLocal || ''}"></td>
+        <td class="read-only"></td>
+        <td class="read-only">1</td>
+        <td class="read-only">${badgeFor('draft')}</td>
+        <td class="notes"></td>
+        <td>
+          <div class="row-actions">
+            <button class="call">Call</button>
+            <button class="delete">Delete</button>
+          </div>
+        </td>
+      `;
+      // Persist edits as user types.
+      tr.querySelector('.f-phone').addEventListener('input', e => updateDraft(d.id, 'phone', e.target.value));
+      tr.querySelector('.f-name').addEventListener('input', e => updateDraft(d.id, 'name', e.target.value));
+      tr.querySelector('.f-schedule').addEventListener('input', e => updateDraft(d.id, 'scheduledAtLocal', e.target.value));
+      tr.querySelector('button.call').addEventListener('click', () => submitDraft(tr, d.id));
+      tr.querySelector('button.delete').addEventListener('click', () => deleteDraft(d.id));
+      return tr;
+    }
+
+    function renderServerRow(r) {
+      const tr = document.createElement('tr');
+      tr.dataset.kind = 'server';
+      tr.dataset.id = r.scheduledCallId;
+      if (r.completed) tr.classList.add('completed-row');
+      tr.innerHTML = `
+        <td class="read-only">${r.phoneNumber || ''}</td>
+        <td class="read-only">${r.name || ''}</td>
+        <td class="read-only"></td>
+        <td class="read-only">${formatWhen(r.scheduledAt)}</td>
+        <td class="read-only">${r.sessionNumber || ''}</td>
+        <td class="read-only">${badgeFor(r.callStatus)}</td>
+        <td class="notes">${r.notes || ''}</td>
+        <td>
+          <div class="row-actions">
+            <button class="delete">Delete</button>
+          </div>
+        </td>
+      `;
+      tr.querySelector('button.delete').addEventListener('click', () => deleteServerRow(r.scheduledCallId, tr));
+      return tr;
+    }
+
+    function rerender(serverRows) {
+      tbody.innerHTML = '';
+      const drafts = loadDrafts();
+      drafts.forEach(d => tbody.appendChild(renderDraftRow(d)));
+      (serverRows || []).forEach(r => tbody.appendChild(renderServerRow(r)));
+      if (drafts.length === 0 && (serverRows || []).length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="8" style="text-align:center;color:#6b7280;padding:1.5rem 0;">
+          No rows yet. Click "+ Add row" to start.
+        </td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    // ----- Draft mutation -----
+    function updateDraft(id, field, value) {
+      const drafts = loadDrafts();
+      const i = drafts.findIndex(d => d.id === id);
+      if (i < 0) return;
+      drafts[i][field] = value;
+      saveDrafts(drafts);
+    }
+    function deleteDraft(id) {
+      const drafts = loadDrafts().filter(d => d.id !== id);
+      saveDrafts(drafts);
+      refresh();
+    }
+    function addDraft() {
+      const drafts = loadDrafts();
+      drafts.push({ id: newDraftId(), phone: '', name: '', scheduledAtLocal: '' });
+      saveDrafts(drafts);
+      refresh();
+    }
+
+    // ----- Submit a draft -----
+    async function submitDraft(tr, id) {
+      const phone = tr.querySelector('.f-phone').value.trim();
+      const name = tr.querySelector('.f-name').value.trim();
+      const scheduledAtLocal = tr.querySelector('.f-schedule').value.trim();
       const apikey = apikeyEl.value.trim();
+      const callBtn = tr.querySelector('button.call');
+      const deleteBtn = tr.querySelector('button.delete');
 
       if (!phone.startsWith('+')) {
-        setStatus('err', 'Phone number must start with + and include the country code (e.g. +254712345678).');
+        setStatus('err', 'Phone must start with + and include the country code (e.g. +2348037642802).');
+        return;
+      }
+      if (!apikey) {
+        setStatus('err', 'Enter the API key in the toolbar first.');
         return;
       }
 
-      localStorage.setItem('eric_api_key', apikey);
-      submitBtn.disabled = true;
-      setStatus('info', 'Dialling...');
+      callBtn.disabled = true;
+      deleteBtn.disabled = true;
+      setStatus('info', scheduledAtLocal ? `Scheduling call to ${phone}...` : `Dialling ${phone}...`);
 
       try {
         const resp = await fetch('/start-call', {
@@ -171,117 +365,100 @@
             'Content-Type': 'application/json',
             'X-API-Key': apikey
           },
-          body: JSON.stringify({ customerNumber: phone, name })
+          body: JSON.stringify({
+            customerNumber: phone,
+            name: name || undefined,
+            scheduledAtLocal: scheduledAtLocal || undefined
+          })
         });
         const data = await resp.json();
-
-        if (resp.ok && data.ok) {
-          setStatus('ok',
-            'Call queued.\n\n' +
-            'Call ID: ' + (data.callId || '(none)') + '\n' +
-            'Status: ' + (data.status || '(none)') + '\n\n' +
-            'The phone will ring within ~30 seconds.'
-          );
-          form.reset();
-          apikeyEl.value = apikey; // keep API key visible
-        } else if (resp.status === 401) {
-          setStatus('err', 'Unauthorized — the API key is missing or incorrect.');
+        if (resp.status === 401) {
+          setStatus('err', 'Unauthorized — check the API key.');
+          callBtn.disabled = false; deleteBtn.disabled = false; return;
+        }
+        if (!resp.ok || !data.ok) {
+          setStatus('err', 'Error: ' + (data.error || ('HTTP ' + resp.status)));
+          callBtn.disabled = false; deleteBtn.disabled = false; return;
+        }
+        // Success — drop the draft and refresh.
+        deleteDraft(id);
+        if (data.scheduledAt) {
+          setStatus('ok', `Scheduled for ${formatWhen(data.scheduledAt)}.`);
         } else {
-          setStatus('err',
-            'Server returned an error (HTTP ' + resp.status + '):\n' +
-            (data.error || JSON.stringify(data, null, 2))
-          );
+          setStatus('ok', `Call queued. The phone will ring within ~30 seconds.`);
         }
       } catch (err) {
         setStatus('err', 'Network error: ' + err.message);
-      } finally {
-        submitBtn.disabled = false;
+        callBtn.disabled = false;
+        deleteBtn.disabled = false;
       }
-
-      // Refresh the scheduled-calls table after a successful dial in case
-      // the participant immediately requests a reschedule.
-      refreshScheduledCalls();
-    });
-
-    // ----- Scheduled calls table -----
-    const schedStatusEl = document.getElementById('sched-status');
-    const schedTableEl = document.getElementById('sched-table');
-    const schedBodyEl = document.getElementById('sched-body');
-    const refreshBtn = document.getElementById('refresh-sched-btn');
-
-    function formatScheduledAt(iso) {
-      if (!iso) return '';
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) return iso;
-      // Locale time + date, in the operator's local timezone.
-      return d.toLocaleString(undefined, {
-        year: 'numeric', month: 'short', day: '2-digit',
-        hour: '2-digit', minute: '2-digit'
-      });
     }
 
-    async function refreshScheduledCalls() {
+    // ----- Delete a server-backed row -----
+    async function deleteServerRow(scheduledCallId, tr) {
       const apikey = apikeyEl.value.trim();
       if (!apikey) {
-        schedStatusEl.textContent = 'Enter API key above to load scheduled calls.';
-        schedTableEl.style.display = 'none';
+        setStatus('err', 'Enter the API key in the toolbar first.');
         return;
       }
-      schedStatusEl.textContent = 'Loading...';
-      schedTableEl.style.display = 'none';
-
+      if (!confirm('Cancel this scheduled call?')) return;
+      const deleteBtn = tr.querySelector('button.delete');
+      deleteBtn.disabled = true;
+      setStatus('info', 'Cancelling...');
       try {
-        const resp = await fetch('/scheduled-calls', {
+        const resp = await fetch('/scheduled-calls/' + encodeURIComponent(scheduledCallId), {
+          method: 'DELETE',
           headers: { 'X-API-Key': apikey }
         });
         const data = await resp.json();
-
-        if (resp.status === 401) {
-          schedStatusEl.textContent = 'Unauthorized — check the API key.';
-          return;
-        }
-        if (!resp.ok || !data.ok) {
-          schedStatusEl.textContent = 'Error: ' + (data.error || ('HTTP ' + resp.status));
-          return;
-        }
-
-        const rows = data.rows || [];
-        schedBodyEl.innerHTML = '';
-        if (rows.length === 0) {
-          const tr = document.createElement('tr');
-          const td = document.createElement('td');
-          td.colSpan = 3;
-          td.className = 'empty';
-          td.textContent = 'No future calls scheduled.';
-          tr.appendChild(td);
-          schedBodyEl.appendChild(tr);
+        if (resp.ok && data.ok) {
+          setStatus('ok', 'Cancelled.');
+          refresh();
+        } else if (resp.status === 401) {
+          setStatus('err', 'Unauthorized — check the API key.');
+          deleteBtn.disabled = false;
         } else {
-          for (const r of rows) {
-            const tr = document.createElement('tr');
-            const tdWhen = document.createElement('td');
-            tdWhen.textContent = formatScheduledAt(r.scheduledAt);
-            const tdPhone = document.createElement('td');
-            tdPhone.textContent = r.phoneNumber || '(unknown)';
-            const tdSession = document.createElement('td');
-            tdSession.textContent = r.sessionNumber || '';
-            tr.appendChild(tdWhen);
-            tr.appendChild(tdPhone);
-            tr.appendChild(tdSession);
-            schedBodyEl.appendChild(tr);
-          }
+          setStatus('err', 'Error: ' + (data.error || ('HTTP ' + resp.status)));
+          deleteBtn.disabled = false;
         }
-        schedStatusEl.textContent = rows.length + ' upcoming call' + (rows.length === 1 ? '' : 's') +
-          '. Last refreshed ' + new Date().toLocaleTimeString();
-        schedTableEl.style.display = 'table';
       } catch (err) {
-        schedStatusEl.textContent = 'Network error: ' + err.message;
+        setStatus('err', 'Network error: ' + err.message);
+        deleteBtn.disabled = false;
       }
     }
 
-    refreshBtn.addEventListener('click', refreshScheduledCalls);
+    // ----- Refresh from server -----
+    async function refresh() {
+      const apikey = apikeyEl.value.trim();
+      if (!apikey) {
+        rerender([]);
+        return;
+      }
+      try {
+        const resp = await fetch('/scheduled-calls', { headers: { 'X-API-Key': apikey } });
+        const data = await resp.json();
+        if (resp.status === 401) {
+          setStatus('err', 'Unauthorized — check the API key.');
+          rerender([]);
+          return;
+        }
+        if (!resp.ok || !data.ok) {
+          setStatus('err', 'Error loading rows: ' + (data.error || ('HTTP ' + resp.status)));
+          rerender([]);
+          return;
+        }
+        rerender(data.rows || []);
+      } catch (err) {
+        setStatus('err', 'Network error: ' + err.message);
+        rerender([]);
+      }
+    }
 
-    // Auto-load on page open if API key is already remembered.
-    if (apikeyEl.value) refreshScheduledCalls();
+    addRowBtn.addEventListener('click', addDraft);
+    refreshBtn.addEventListener('click', () => { clearStatus(); refresh(); });
+
+    // Initial render
+    refresh();
   </script>
 </body>
 </html>

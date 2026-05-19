@@ -72,10 +72,81 @@ const ccToTz = {
   "+33": "Europe/Paris"
 };
 
+// Map Vapi endedReason strings to richer sessions.status values so the
+// operator dashboard's Notes column can show meaningful outcomes.
+// Anything not matched here falls through to "completed".
+function mapEndedReasonToStatus(endedReason) {
+  if (!endedReason) return "completed";
+  const r = String(endedReason).toLowerCase();
+  if (r.includes("did-not-answer") || r.includes("no-answer")) return "no_answer";
+  if (r.includes("voicemail")) return "voicemail";
+  if (
+    r.includes("invalid") ||
+    r.includes("twilio-failed-to-connect") ||
+    r.includes("phone-call-provider-bypass") ||
+    r.includes("provider-error") && r.includes("phone")
+  ) return "invalid_number";
+  if (r.includes("silence-timed-out")) return "no_engagement";
+  if (r.includes("exceeded-max-duration")) return "completed_at_cap";
+  if (r.startsWith("customer-busy")) return "busy";
+  return "completed";
+}
+
+// Human-readable label for sessions.status. Used by the operator dashboard
+// Notes column.
+function statusToNotesLabel(status) {
+  switch (status) {
+    case "wrong_number":          return "Wrong number";
+    case "rescheduled_unreached": return "Person unavailable — rescheduled";
+    case "no_answer":             return "No answer";
+    case "voicemail":             return "Voicemail";
+    case "invalid_number":        return "Not a valid number";
+    case "no_engagement":         return "Silence — no engagement";
+    case "completed_at_cap":      return "Completed (hit time cap)";
+    case "busy":                  return "Busy";
+    case "completed":             return "";
+    case "scheduled":             return "";
+    case "in_progress":           return "";
+    case "cancelled":             return "Cancelled";
+    default:                      return status || "";
+  }
+}
+
 function inferTimezone(number = "") {
   const codes = Object.keys(ccToTz).sort((a, b) => b.length - a.length);
   for (const c of codes) if (number.startsWith(c)) return ccToTz[c];
   return "UTC";
+}
+
+// Interpret a naive local datetime string (e.g., "2026-05-20T10:00" from an
+// <input type="datetime-local">) as if it were expressed in the given target
+// timezone, and return the corresponding absolute UTC Date. Independent of
+// the host's local timezone (uses Intl.DateTimeFormat.formatToParts).
+function parseLocalDatetimeInTimezone(naiveLocal, timezone) {
+  if (!naiveLocal) return null;
+  const withSeconds = /:\d{2}:\d{2}$/.test(naiveLocal) ? naiveLocal : naiveLocal + ":00";
+  const asUtc = new Date(withSeconds + "Z");
+  if (isNaN(asUtc.getTime())) return null;
+  // Discover what wall-clock time that "fake-UTC" instant lands on in the
+  // target timezone, reconstruct that wall-clock as UTC, and use the
+  // difference as the timezone offset to subtract.
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(asUtc).map(p => [p.type, p.value]));
+  const wallAsUtc = Date.UTC(
+    parseInt(parts.year, 10),
+    parseInt(parts.month, 10) - 1,
+    parseInt(parts.day, 10),
+    parseInt(parts.hour, 10) % 24,
+    parseInt(parts.minute, 10),
+    parseInt(parts.second, 10)
+  );
+  const offsetMs = wallAsUtc - asUtc.getTime();
+  return new Date(asUtc.getTime() - offsetMs);
 }
 
 // Map ISO 3166-1 alpha-2 country codes to English country names for the
@@ -687,7 +758,12 @@ app.post("/start-call", async (req, res) => {
       name,
       sessionNumber = 1,
       priorSessionsContext = "",
-      assistantId
+      assistantId,
+      // Optional naive local datetime string ("YYYY-MM-DDTHH:MM") from the
+      // operator UI's <input type="datetime-local">. If present, the call is
+      // scheduled for the future in the timezone inferred from the phone
+      // number's country code. If empty/missing, the call dials immediately.
+      scheduledAtLocal
     } = req.body || {};
 
     if (!customerNumber) return res.status(400).json({ error: "Missing customerNumber" });
@@ -710,28 +786,80 @@ app.post("/start-call", async (req, res) => {
       country: inferCountryFromPhone(customerNumber)
     });
 
-    const started = await startVapiCall({
-      assistantId: assistantId || ASSISTANT_ID,
-      customerNumber,
-      variableValues
-    });
+    // Decide between immediate dial and future schedule.
+    let scheduledUtcIso = null;
+    if (scheduledAtLocal && String(scheduledAtLocal).trim()) {
+      const tz = inferTimezone(customerNumber);
+      const utcDate = parseLocalDatetimeInTimezone(scheduledAtLocal, tz);
+      if (!utcDate) {
+        return res.status(400).json({ error: "scheduledAtLocal could not be parsed" });
+      }
+      if (utcDate.getTime() <= Date.now()) {
+        return res.status(400).json({ error: "scheduledAtLocal is in the past" });
+      }
+      scheduledUtcIso = utcDate.toISOString();
+    }
 
-    await setSessionCallId(session.id, started?.id);
+    const hasName = Boolean((participant.name || "").trim());
+
+    let vapiCallId = null;
+    let vapiStatus = null;
+
+    if (scheduledUtcIso) {
+      // Future-scheduled: hand off to Vapi's native scheduler.
+      const result = await vapiPost("/call", {
+        assistantId: assistantId || ASSISTANT_ID,
+        phoneNumberId: PHONE_NUMBER_ID,
+        customer: { number: customerNumber },
+        schedulePlan: { earliestAt: scheduledUtcIso },
+        assistantOverrides: {
+          variableValues,
+          model: await buildModelOverride({ isCallback: false, activeSession: sessionNumber, hasName })
+        }
+      });
+      vapiCallId = result?.id;
+      vapiStatus = result?.status;
+    } else {
+      const started = await startVapiCall({
+        assistantId: assistantId || ASSISTANT_ID,
+        customerNumber,
+        variableValues
+      });
+      vapiCallId = started?.id;
+      vapiStatus = started?.status;
+    }
+
+    await setSessionCallId(session.id, vapiCallId);
+
+    // Record a scheduled_calls row for the operator dashboard, regardless of
+    // whether this is an immediate or future-scheduled dial. Immediate calls
+    // use now() as scheduled_at so they still appear in the table view.
+    try {
+      await recordScheduledCall({
+        participantId: participant.id,
+        sessionNumber,
+        scheduledAt: scheduledUtcIso || new Date().toISOString(),
+        vapiCallId
+      });
+    } catch (e) {
+      console.error("Failed to record scheduled_calls row:", e);
+    }
 
     // Snapshot the live assistant config so we know which transcriber /
     // voice / model settings were active at the moment of this call.
-    // Vapi's call object reports the *current* assistant config, not the
-    // historical one — without this we can't reconstruct what was tested.
-    logCallConfigSnapshot(started?.id, assistantId || ASSISTANT_ID).catch(e =>
-      console.warn("Config snapshot log failed:", e.message)
-    );
+    if (!scheduledUtcIso) {
+      logCallConfigSnapshot(vapiCallId, assistantId || ASSISTANT_ID).catch(e =>
+        console.warn("Config snapshot log failed:", e.message)
+      );
+    }
 
     return res.json({
       ok: true,
-      callId: started?.id,
+      callId: vapiCallId,
       sessionId: session.id,
       participantId: participant.id,
-      status: started?.status
+      status: vapiStatus,
+      scheduledAt: scheduledUtcIso
     });
   } catch (err) {
     console.error("start-call error:", err);
@@ -741,8 +869,9 @@ app.post("/start-call", async (req, res) => {
 
 /**
  * GET /scheduled-calls
- * Returns future-only scheduled calls for the operator dashboard.
- * Auth: same X-API-Key gate as /start-call.
+ * Returns scheduled_calls rows (future + recent past), joined with
+ * participant info and the matching session status, for the operator
+ * dashboard table. Auth: same X-API-Key gate as /start-call.
  */
 app.get("/scheduled-calls", async (req, res) => {
   try {
@@ -753,33 +882,35 @@ app.get("/scheduled-calls", async (req, res) => {
       }
     }
 
-    const nowIso = new Date().toISOString();
+    // Pull recent + future scheduled rows (within the last 7 days, plus all
+    // future). The dashboard uses this for its single table view.
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const { data: scheduled, error: schedErr } = await supabase
       .from("scheduled_calls")
-      .select("id, scheduled_at, session_number, vapi_call_id, participant_id, status")
-      .gt("scheduled_at", nowIso)
+      .select("id, scheduled_at, session_number, vapi_call_id, participant_id, status, created_at")
+      .gt("scheduled_at", sevenDaysAgo)
       .neq("status", "cancelled")
       .order("scheduled_at", { ascending: true });
     if (schedErr) throw schedErr;
 
-    // For every row that has a vapi_call_id, verify the Vapi-side call is
+    // For FUTURE rows that have a vapi_call_id, verify the Vapi-side call is
     // still in "scheduled" status. Rows whose Vapi call has been deleted or
-    // ended out-of-band become stale otherwise — the participant won't be
-    // dialled but the dashboard would keep listing the call as upcoming.
-    // Mark such rows as cancelled in Supabase so we don't re-check on every
-    // dashboard load.
+    // ended out-of-band become stale otherwise. Past rows we leave alone
+    // (their Vapi status will be "ended" by now, not stale).
+    const nowMs = Date.now();
     const verifications = await Promise.all((scheduled || []).map(async (s) => {
-      if (!s.vapi_call_id) return { row: s, live: true };
+      const isFuture = new Date(s.scheduled_at).getTime() > nowMs;
+      if (!isFuture || !s.vapi_call_id) return { row: s, live: true };
       try {
         const resp = await fetch(`https://api.vapi.ai/call/${s.vapi_call_id}`, {
           headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
         });
         if (resp.status === 404) return { row: s, live: false };
-        if (!resp.ok) return { row: s, live: true }; // transient — keep showing
+        if (!resp.ok) return { row: s, live: true };
         const call = await resp.json();
         return { row: s, live: call.status === "scheduled" };
       } catch {
-        return { row: s, live: true }; // network blip — keep showing
+        return { row: s, live: true };
       }
     }));
 
@@ -794,6 +925,7 @@ app.get("/scheduled-calls", async (req, res) => {
 
     const liveRows = verifications.filter(v => v.live).map(v => v.row);
 
+    // Bulk-fetch participants and matching sessions for the dashboard rows.
     const participantIds = [...new Set(liveRows.map(s => s.participant_id).filter(Boolean))];
     let participantsById = {};
     if (participantIds.length > 0) {
@@ -805,21 +937,97 @@ app.get("/scheduled-calls", async (req, res) => {
       participantsById = Object.fromEntries((parts || []).map(p => [p.id, p]));
     }
 
+    // Sessions keyed by (participant_id, session_number) — that's the unique
+    // index. Used to derive call status / notes for the dashboard.
+    let sessionsByKey = {};
+    if (participantIds.length > 0) {
+      const sessionNumbers = [...new Set(liveRows.map(s => s.session_number).filter(Boolean))];
+      const { data: sess, error: sessErr } = await supabase
+        .from("sessions")
+        .select("participant_id, session_number, status, started_at, completed_at, call_id")
+        .in("participant_id", participantIds)
+        .in("session_number", sessionNumbers);
+      if (sessErr) console.warn("Sessions join failed:", sessErr.message);
+      sessionsByKey = Object.fromEntries(
+        (sess || []).map(s => [`${s.participant_id}:${s.session_number}`, s])
+      );
+    }
+
     const rows = liveRows.map(s => {
       const p = participantsById[s.participant_id] || {};
+      const sess = sessionsByKey[`${s.participant_id}:${s.session_number}`] || {};
+      const callStatus = sess.status || "scheduled";
       return {
+        scheduledCallId: s.id,
         scheduledAt: s.scheduled_at,
         phoneNumber: p.phone_number || null,
         name: p.name || null,
         sessionNumber: s.session_number,
         vapiCallId: s.vapi_call_id,
-        status: s.status
+        callStatus,
+        notes: statusToNotesLabel(callStatus),
+        completed: ["completed", "completed_at_cap"].includes(callStatus),
+        startedAt: sess.started_at || null,
+        completedAt: sess.completed_at || null
       };
     });
 
     return res.json({ ok: true, count: rows.length, rows });
   } catch (err) {
     console.error("scheduled-calls error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * DELETE /scheduled-calls/:id
+ * Cancel a scheduled call: delete the Vapi-side schedule (if any),
+ * mark the Supabase row as cancelled.
+ */
+app.delete("/scheduled-calls/:id", async (req, res) => {
+  try {
+    if (START_CALL_API_KEY) {
+      const provided = req.header("X-API-Key");
+      if (provided !== START_CALL_API_KEY) {
+        return res.status(401).json({ error: "Unauthorized: missing or invalid X-API-Key header" });
+      }
+    }
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: "Missing id" });
+
+    const { data: row, error: fetchErr } = await supabase
+      .from("scheduled_calls")
+      .select("id, vapi_call_id, scheduled_at")
+      .eq("id", id)
+      .maybeSingle();
+    if (fetchErr) throw fetchErr;
+    if (!row) return res.status(404).json({ error: "scheduled_calls row not found" });
+
+    // Best-effort Vapi delete (only for future-scheduled rows whose Vapi call
+    // still exists). Past calls will not have a deletable Vapi resource.
+    if (row.vapi_call_id) {
+      try {
+        const resp = await fetch(`https://api.vapi.ai/call/${row.vapi_call_id}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
+        });
+        if (!resp.ok && resp.status !== 404) {
+          console.warn(`Vapi DELETE for ${row.vapi_call_id} returned ${resp.status}`);
+        }
+      } catch (e) {
+        console.warn("Vapi DELETE failed (continuing):", e.message);
+      }
+    }
+
+    const { error: updateErr } = await supabase
+      .from("scheduled_calls")
+      .update({ status: "cancelled" })
+      .eq("id", id);
+    if (updateErr) throw updateErr;
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /scheduled-calls error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -1321,6 +1529,11 @@ app.post("/vapi", async (req, res) => {
       const call = message.call;
       const callId = call?.id;
       const customerNumber = call?.customer?.number || message?.customer?.number;
+      const endedReason =
+        message?.endedReason ||
+        call?.endedReason ||
+        message?.call?.endedReason ||
+        "";
       const transcript =
         message?.artifact?.transcript ||
         call?.artifact?.transcript ||
@@ -1331,11 +1544,30 @@ app.post("/vapi", async (req, res) => {
         message?.artifact?.messages || call?.artifact?.messages || null;
 
       if (callId) {
-        await updateSessionByCallId(callId, {
-          status: "completed",
-          completed_at: new Date().toISOString(),
-          transcript: transcriptStructured || (transcript ? { plain: transcript } : null)
-        });
+        // Don't overwrite tool-set terminal states (wrong_number,
+        // rescheduled_unreached). For everything else, map Vapi's
+        // endedReason to a richer status so the dashboard Notes column
+        // can show things like "No answer" / "Invalid number".
+        const { data: existing } = await supabase
+          .from("sessions")
+          .select("status")
+          .eq("call_id", callId)
+          .maybeSingle();
+        const toolSetTerminals = new Set(["wrong_number", "rescheduled_unreached"]);
+        if (existing && toolSetTerminals.has(existing.status)) {
+          // Just persist the transcript; leave status as set by the tool.
+          await updateSessionByCallId(callId, {
+            completed_at: new Date().toISOString(),
+            transcript: transcriptStructured || (transcript ? { plain: transcript } : null)
+          });
+        } else {
+          const status = mapEndedReasonToStatus(endedReason);
+          await updateSessionByCallId(callId, {
+            status,
+            completed_at: new Date().toISOString(),
+            transcript: transcriptStructured || (transcript ? { plain: transcript } : null)
+          });
+        }
       }
 
       if (customerNumber) {
