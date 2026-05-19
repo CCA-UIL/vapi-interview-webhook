@@ -1,0 +1,24 @@
+{
+  "type": "function",
+  "async": false,
+  "function": {
+    "name": "prescreening_complete",
+    "description": "Use ONLY at the end of a prescreening call, immediately after the participant has answered the final screening question (Q12: piped water). Do NOT use during an interview call. Do NOT speak any closing words yourself first — the tool's request-complete message contains the full closing text and will be spoken verbatim by the voice platform, which then ends the call automatically.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  "messages": [
+    {
+      "type": "request-start",
+      "content": ""
+    },
+    {
+      "type": "request-complete",
+      "content": "Thank you so much for your time. If you are selected for the interview, we will call you back. Goodbye.",
+      "endCallAfterSpokenEnabled": true
+    }
+  ]
+}
