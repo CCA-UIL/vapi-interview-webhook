@@ -437,6 +437,94 @@ async function updateScheduledCallStatusByVapiId(vapiCallId, status) {
   if (error) console.warn("updateScheduledCallStatusByVapiId failed:", error.message);
 }
 
+// Simple asset count derived from the 4 asset questions. A real PPI score
+// requires country-specific scorecards and ~10 indicators; we have 4, so
+// this is just a 0-4 count placeholder until/unless a full scorecard is
+// wired in.
+function computePpiScore(data) {
+  if (!data) return null;
+  let score = 0;
+  if (data.owns_tv) score++;
+  if (data.owns_fridge) score++;
+  if (data.owns_car) score++;
+  if (data.piped_water) score++;
+  return score;
+}
+
+// Persist the prescreening analysis (LLM-extracted structured data from the
+// transcript) into the prescreening_responses table. Upserts by
+// participant_id — per the user's preference, a rescreen overwrites the
+// previous responses (UNIQUE constraint on participant_id enforces this).
+async function handlePrescreeningEndOfCall({ message, call, customerNumber, callId }) {
+  try {
+    const analysis = message?.analysis || call?.analysis || {};
+    const data = analysis.structuredData || {};
+    console.log("Prescreening end-of-call", {
+      callId,
+      customerNumber,
+      hasStructuredData: Boolean(analysis.structuredData),
+      keys: Object.keys(data)
+    });
+
+    if (!customerNumber) {
+      console.warn("Prescreening end-of-call missing customerNumber, skipping persist");
+      return;
+    }
+
+    // Skip persisting when the call yielded no meaningful screening data.
+    // Happens on early hang-ups, wrong-number calls, and reschedules where
+    // the participant never got past Q1. The participant's eventual
+    // completed call will create the proper row.
+    const hasAnyData = Object.values(data).some(v => v !== null && v !== undefined && v !== "");
+    if (!hasAnyData) {
+      console.warn("Prescreening end-of-call: empty structuredData, skipping persist", { callId });
+      return;
+    }
+
+    const { data: p } = await supabase
+      .from("participants")
+      .select("id")
+      .eq("phone_number", customerNumber)
+      .maybeSingle();
+    if (!p?.id) {
+      console.warn("Prescreening end-of-call: no participant row for", customerNumber);
+      return;
+    }
+
+    const ppi = computePpiScore(data);
+    const row = {
+      participant_id: p.id,
+      vapi_call_id: callId,
+      about_you_text: data.about_you_text ?? null,
+      english_interview_ok: data.english_interview_ok ?? null,
+      robot_recorded_ok: data.robot_recorded_ok ?? null,
+      whatsapp_photos_ok: data.whatsapp_photos_ok ?? null,
+      main_cook: data.main_cook ?? null,
+      owns_epc: data.owns_epc ?? null,
+      epc_uses_last_week: data.epc_uses_last_week ?? null,
+      age: data.age ?? null,
+      owns_tv: data.owns_tv ?? null,
+      owns_fridge: data.owns_fridge ?? null,
+      owns_car: data.owns_car ?? null,
+      piped_water: data.piped_water ?? null,
+      ppi_score: ppi,
+      raw_extraction: data,
+      updated_at: new Date().toISOString()
+    };
+
+    const { error } = await supabase
+      .from("prescreening_responses")
+      .upsert(row, { onConflict: "participant_id" });
+    if (error) {
+      console.error("Failed to upsert prescreening_responses:", error.message);
+    } else {
+      console.log("Prescreening response persisted", { participantId: p.id, callId, ppi });
+    }
+  } catch (e) {
+    console.error("handlePrescreeningEndOfCall error:", e);
+  }
+}
+
 // =============================================================================
 // Vapi API wrappers
 // =============================================================================
@@ -517,6 +605,58 @@ const PROMPT_PATH = path.join(
   "prompts",
   "Imani_system_prompt_phase1.xml"
 );
+
+const PRESCREENING_PROMPT_PATH = path.join(
+  __dirname,
+  "eric_project",
+  "prompts",
+  "prescreening_prompt.xml"
+);
+
+// JSON schema used by Vapi's analysisPlan.structuredDataPlan to extract
+// structured data from the prescreening transcript at end-of-call.
+const PRESCREENING_SCHEMA = {
+  type: "object",
+  properties: {
+    about_you_text: {
+      type: "string",
+      description: "The participant's free-text answer to 'Tell me a bit about yourself.' Quote them directly; trim to ~300 chars if long."
+    },
+    english_interview_ok: {
+      type: "boolean",
+      description: "Q2: Comfortable conducting three 45-minute phone interviews in English."
+    },
+    robot_recorded_ok: {
+      type: "boolean",
+      description: "Q3: Comfortable being interviewed by a robot and having the interview recorded."
+    },
+    whatsapp_photos_ok: {
+      type: "boolean",
+      description: "Q4: Willing to send 3 EPC photos + 3 kitchen photos via WhatsApp."
+    },
+    main_cook: {
+      type: "boolean",
+      description: "Q5: Main person responsible for planning, preparing, or overseeing meals."
+    },
+    owns_epc: {
+      type: "boolean",
+      description: "Q6: Owns an electric pressure cooker."
+    },
+    epc_uses_last_week: {
+      type: "integer",
+      description: "Q7: Number of times the participant used their electric pressure cooker last week. If unclear, leave null."
+    },
+    age: {
+      type: "integer",
+      description: "Q8: Participant's age in years."
+    },
+    owns_tv: { type: "boolean", description: "Q9: Owns a television." },
+    owns_fridge: { type: "boolean", description: "Q10: Owns a refrigerator." },
+    owns_car: { type: "boolean", description: "Q11: Owns a private car or van." },
+    piped_water: { type: "boolean", description: "Q12: Has piped water at home." }
+  },
+  required: []
+};
 
 function loadPromptForCall({ isCallback, activeSession = 1, hasName = false, consentEnabled = true }) {
   let prompt = fs.readFileSync(PROMPT_PATH, "utf8");
@@ -615,13 +755,28 @@ function consentStatementEnabled() {
   return String(process.env.CONSENT_STATEMENT_ENABLED || "true").toLowerCase() !== "false";
 }
 
-async function buildModelOverride({ isCallback, activeSession = 1, hasName = false }) {
+// Load the prescreening prompt and strip the step_0 identity-check block
+// when no participant name was provided. Mirrors the per-call stripping
+// pattern used in loadPromptForCall for the interview prompt.
+function loadPrescreeningPrompt({ hasName = false }) {
+  let prompt = fs.readFileSync(PRESCREENING_PROMPT_PATH, "utf8");
+  if (!hasName) {
+    const re = /^\s*<step_0_identity_check>[\s\S]*?^\s*<\/step_0_identity_check>\s*$/m;
+    prompt = prompt.replace(re, "<step_0_identity_check>(omitted: no participant name provided)</step_0_identity_check>");
+  }
+  return prompt;
+}
+
+async function buildModelOverride({ isCallback, activeSession = 1, hasName = false, callKind = "interview" }) {
   const template = await getModelTemplate();
+  const content = callKind === "prescreening"
+    ? loadPrescreeningPrompt({ hasName })
+    : loadPromptForCall({
+        isCallback, activeSession, hasName, consentEnabled: consentStatementEnabled()
+      });
   return {
     ...template,
-    messages: [{ role: "system", content: loadPromptForCall({
-      isCallback, activeSession, hasName, consentEnabled: consentStatementEnabled()
-    }) }]
+    messages: [{ role: "system", content }]
   };
 }
 
@@ -629,13 +784,14 @@ async function startVapiCall({ assistantId, customerNumber, variableValues }) {
   const isCallback = variableValues?.IS_CALLBACK === "true";
   const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
   const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
+  const callKind = variableValues?.CALL_KIND || "interview";
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
     customer: { number: customerNumber },
     assistantOverrides: {
       variableValues,
-      model: await buildModelOverride({ isCallback, activeSession, hasName })
+      model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
     }
   });
 }
@@ -657,6 +813,7 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
   const isCallback = variableValues?.IS_CALLBACK === "true";
   const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
   const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
+  const callKind = variableValues?.CALL_KIND || "interview";
   const earliestMs = new Date(earliestAtIso).getTime();
   const delayMinutes = (earliestMs - Date.now()) / 60000;
 
@@ -682,7 +839,7 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
     schedulePlan: { earliestAt: earliestAtIso },
     assistantOverrides: {
       variableValues,
-      model: await buildModelOverride({ isCallback, activeSession, hasName })
+      model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
     }
   });
 }
@@ -768,7 +925,7 @@ async function qstashScheduleAt({ url, notBeforeSeconds, body }) {
   return { status: resp.status, body: text };
 }
 
-function buildVariableValues({ activeSession, priorSessionsContext, isCallback, participantName, country }) {
+function buildVariableValues({ activeSession, priorSessionsContext, isCallback, participantName, country, callKind = "interview" }) {
   return {
     ACTIVE_SESSION: String(activeSession),
     PRIOR_SESSIONS_CONTEXT: priorSessionsContext || "",
@@ -776,7 +933,8 @@ function buildVariableValues({ activeSession, priorSessionsContext, isCallback, 
     IS_CALLBACK: isCallback ? "true" : "false",
     SCREENING_QUESTIONS_JSON,
     PARTICIPANT_NAME: participantName || "",
-    COUNTRY: country || ""
+    COUNTRY: country || "",
+    CALL_KIND: callKind
   };
 }
 
@@ -925,6 +1083,101 @@ app.post("/start-call", async (req, res) => {
 });
 
 /**
+ * POST /start-prescreening
+ * Body: { customerNumber (req), name?, scheduledAtLocal? }
+ * Places a pre-screening call using the prescreening prompt and a
+ * structured-data extraction schema. The participant answers 12 short
+ * questions; the analysis runs at end-of-call and the extracted JSON is
+ * upserted into the prescreening_responses table for the human analyst.
+ */
+app.post("/start-prescreening", async (req, res) => {
+  try {
+    if (START_CALL_API_KEY) {
+      const provided = req.header("X-API-Key");
+      if (provided !== START_CALL_API_KEY) {
+        return res.status(401).json({ error: "Unauthorized: missing or invalid X-API-Key header" });
+      }
+    }
+
+    const { customerNumber, name, scheduledAtLocal } = req.body || {};
+    if (!customerNumber) return res.status(400).json({ error: "Missing customerNumber" });
+
+    const participant = await upsertParticipant({ phoneNumber: customerNumber, name });
+    const submittedName = (name || "").trim();
+    const hasName = Boolean(submittedName);
+
+    let scheduledUtcIso = null;
+    if (scheduledAtLocal && String(scheduledAtLocal).trim()) {
+      const tz = inferTimezone(customerNumber);
+      const utcDate = parseLocalDatetimeInTimezone(scheduledAtLocal, tz);
+      if (!utcDate) return res.status(400).json({ error: "scheduledAtLocal could not be parsed" });
+      if (utcDate.getTime() <= Date.now()) return res.status(400).json({ error: "scheduledAtLocal is in the past" });
+      scheduledUtcIso = utcDate.toISOString();
+    }
+
+    const variableValues = buildVariableValues({
+      activeSession: 1,
+      priorSessionsContext: "",
+      isCallback: false,
+      participantName: submittedName,
+      country: inferCountryFromPhone(customerNumber),
+      callKind: "prescreening"
+    });
+
+    // Compose model override with the prescreening prompt (NOT Imani's
+    // interview prompt). Use the same model template otherwise so voice,
+    // transcriber, and tool wiring stay identical.
+    const template = await getModelTemplate();
+    const model = {
+      ...template,
+      messages: [{ role: "system", content: loadPrescreeningPrompt({ hasName }) }]
+    };
+
+    // Per-call analysisPlan override carries the structured-data schema.
+    // Vapi runs an extraction LLM after the call ends; the result lands
+    // on call.analysis.structuredData and is delivered to our webhook.
+    const analysisPlan = {
+      structuredDataPlan: {
+        enabled: true,
+        schema: PRESCREENING_SCHEMA
+      },
+      summaryPlan: { enabled: true }
+    };
+
+    const baseBody = {
+      assistantId: ASSISTANT_ID,
+      phoneNumberId: PHONE_NUMBER_ID,
+      customer: { number: customerNumber },
+      assistantOverrides: { variableValues, model, analysisPlan }
+    };
+    const body = scheduledUtcIso
+      ? { ...baseBody, schedulePlan: { earliestAt: scheduledUtcIso } }
+      : baseBody;
+
+    const result = await vapiPost("/call", body);
+    const vapiCallId = result?.id;
+
+    // Prescreening calls live exclusively in the prescreening_responses
+    // table. The interview operator's scheduled_calls table is reserved
+    // for interview sessions 1/2/3 (CHECK constraint enforces this). The
+    // prescreening row is created by the end-of-call-report handler once
+    // the analysis is available; for future-scheduled prescreening calls
+    // there is no row until the call actually completes.
+
+    return res.json({
+      ok: true,
+      callId: vapiCallId,
+      participantId: participant.id,
+      status: result?.status,
+      scheduledAt: scheduledUtcIso
+    });
+  } catch (err) {
+    console.error("start-prescreening error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
  * GET /scheduled-calls
  * Returns scheduled_calls rows (future + recent past), joined with
  * participant info and the matching session status, for the operator
@@ -1036,6 +1289,119 @@ app.get("/scheduled-calls", async (req, res) => {
     return res.json({ ok: true, count: rows.length, rows });
   } catch (err) {
     console.error("scheduled-calls error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * GET /prescreening-responses
+ * Returns all prescreening_responses rows with participant phone/name and
+ * a derived "interviewCalled" flag (true if any interview call exists for
+ * the participant). Auth: same X-API-Key gate as the other endpoints.
+ */
+app.get("/prescreening-responses", async (req, res) => {
+  try {
+    if (START_CALL_API_KEY) {
+      const provided = req.header("X-API-Key");
+      if (provided !== START_CALL_API_KEY) {
+        return res.status(401).json({ error: "Unauthorized: missing or invalid X-API-Key header" });
+      }
+    }
+
+    const { data: rows, error } = await supabase
+      .from("prescreening_responses")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+
+    const participantIds = [...new Set((rows || []).map(r => r.participant_id).filter(Boolean))];
+    let participantsById = {};
+    let interviewCalledIds = new Set();
+    if (participantIds.length > 0) {
+      const { data: parts } = await supabase
+        .from("participants")
+        .select("id, phone_number, name")
+        .in("id", participantIds);
+      participantsById = Object.fromEntries((parts || []).map(p => [p.id, p]));
+
+      // Any scheduled_calls row for these participants implies an interview
+      // attempt (the scheduled_calls table is interview-only — session_number
+      // CHECK constraint enforces 1/2/3).
+      const { data: ic } = await supabase
+        .from("scheduled_calls")
+        .select("participant_id")
+        .in("participant_id", participantIds)
+        .neq("status", "cancelled");
+      interviewCalledIds = new Set((ic || []).map(x => x.participant_id));
+    }
+
+    const out = (rows || []).map(r => {
+      const p = participantsById[r.participant_id] || {};
+      return {
+        id: r.id,
+        participantId: r.participant_id,
+        phoneNumber: p.phone_number || null,
+        name: p.name || null,
+        vapiCallId: r.vapi_call_id,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+        // Responses
+        aboutYou: r.about_you_text,
+        englishInterviewOk: r.english_interview_ok,
+        robotRecordedOk: r.robot_recorded_ok,
+        whatsappPhotosOk: r.whatsapp_photos_ok,
+        mainCook: r.main_cook,
+        ownsEpc: r.owns_epc,
+        epcUsesLastWeek: r.epc_uses_last_week,
+        age: r.age,
+        ownsTv: r.owns_tv,
+        ownsFridge: r.owns_fridge,
+        ownsCar: r.owns_car,
+        pipedWater: r.piped_water,
+        ppiScore: r.ppi_score,
+        // Analyst flags
+        disqualified: r.disqualified,
+        forceActive: r.force_active,
+        analystNotes: r.analyst_notes,
+        // Derived
+        interviewCalled: interviewCalledIds.has(r.participant_id)
+      };
+    });
+
+    return res.json({ ok: true, count: out.length, rows: out });
+  } catch (err) {
+    console.error("GET /prescreening-responses error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
+ * PATCH /prescreening-responses/:id
+ * Analyst-controlled flags: disqualified, force_active, analyst_notes.
+ * Body: any subset of those fields. Auth: same X-API-Key gate.
+ */
+app.patch("/prescreening-responses/:id", async (req, res) => {
+  try {
+    if (START_CALL_API_KEY) {
+      const provided = req.header("X-API-Key");
+      if (provided !== START_CALL_API_KEY) {
+        return res.status(401).json({ error: "Unauthorized: missing or invalid X-API-Key header" });
+      }
+    }
+    const { id } = req.params;
+    const { disqualified, force_active, analyst_notes } = req.body || {};
+    const updates = { updated_at: new Date().toISOString() };
+    if (typeof disqualified === "boolean") updates.disqualified = disqualified;
+    if (typeof force_active === "boolean") updates.force_active = force_active;
+    if (typeof analyst_notes === "string") updates.analyst_notes = analyst_notes;
+    const { error } = await supabase
+      .from("prescreening_responses")
+      .update(updates)
+      .eq("id", id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /prescreening-responses error:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -1300,6 +1666,7 @@ app.post("/vapi", async (req, res) => {
         const currentSession = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
         const priorContext = liveVars.PRIOR_SESSIONS_CONTEXT || "";
         const participantName = liveVars.PARTICIPANT_NAME || "";
+        const callKind = liveVars.CALL_KIND || "interview";
 
         const scheduled = await scheduleVapiCallback({
           assistantId: assistantIdForCallback,
@@ -1310,7 +1677,8 @@ app.post("/vapi", async (req, res) => {
             priorSessionsContext: priorContext,
             isCallback: true,
             participantName,
-            country: inferCountryFromPhone(customerNumber)
+            country: inferCountryFromPhone(customerNumber),
+            callKind
           })
         });
 
@@ -1322,7 +1690,10 @@ app.post("/vapi", async (req, res) => {
             .select("id")
             .eq("phone_number", customerNumber)
             .maybeSingle();
-          if (p?.id) {
+          if (p?.id && callKind === "interview") {
+            // Interview callbacks get a scheduled_calls row for the
+            // operator dashboard. Prescreening callbacks do not — they
+            // land in prescreening_responses only when the call completes.
             await recordScheduledCall({
               participantId: p.id,
               sessionNumber: currentSession,
@@ -1347,15 +1718,16 @@ app.post("/vapi", async (req, res) => {
       if (fn?.name === "report_wrong_number") {
         const customerNumber = message?.call?.customer?.number;
         const currentVapiCallId = message?.call?.id;
+        const liveVars = message?.call?.assistantOverrides?.variableValues || {};
+        const currentSession = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
+        const callKind = liveVars.CALL_KIND || "interview";
         try {
           const { data: p } = await supabase
             .from("participants")
             .select("id")
             .eq("phone_number", customerNumber)
             .maybeSingle();
-          if (p?.id) {
-            const liveVars = message?.call?.assistantOverrides?.variableValues || {};
-            const currentSession = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
+          if (p?.id && callKind === "interview") {
             await supabase
               .from("sessions")
               .update({ status: "wrong_number" })
@@ -1403,6 +1775,7 @@ app.post("/vapi", async (req, res) => {
         const liveVars = message?.call?.assistantOverrides?.variableValues || {};
         const currentSession = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
         const participantName = liveVars.PARTICIPANT_NAME || "";
+        const callKind = liveVars.CALL_KIND || "interview";
 
         const scheduled = await scheduleVapiCallback({
           assistantId: assistantIdForCallback,
@@ -1413,7 +1786,8 @@ app.post("/vapi", async (req, res) => {
             priorSessionsContext: "",
             isCallback: false,
             participantName,
-            country: inferCountryFromPhone(customerNumber)
+            country: inferCountryFromPhone(customerNumber),
+            callKind
           })
         });
 
@@ -1423,7 +1797,7 @@ app.post("/vapi", async (req, res) => {
             .select("id")
             .eq("phone_number", customerNumber)
             .maybeSingle();
-          if (p?.id) {
+          if (p?.id && callKind === "interview") {
             await recordScheduledCall({
               participantId: p.id,
               sessionNumber: currentSession,
@@ -1606,6 +1980,18 @@ app.post("/vapi", async (req, res) => {
         call?.endedReason ||
         message?.call?.endedReason ||
         "";
+
+      // Detect prescreening calls and route the analysis output into the
+      // prescreening_responses table. This runs BEFORE the regular interview
+      // path so we don't try to update sessions/scheduled_calls for a call
+      // that isn't an interview.
+      const callKind = call?.assistantOverrides?.variableValues?.CALL_KIND
+        || message?.call?.assistantOverrides?.variableValues?.CALL_KIND
+        || "interview";
+      if (callKind === "prescreening") {
+        await handlePrescreeningEndOfCall({ message, call, customerNumber, callId });
+        return res.json({});
+      }
       const transcript =
         message?.artifact?.transcript ||
         call?.artifact?.transcript ||
@@ -1772,13 +2158,14 @@ app.post("/timing/fire-callback", async (req, res) => {
     // Session 1 Step 0 identity-check block is kept.
     const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
     const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
+    const callKind = variableValues?.CALL_KIND || "interview";
     const result = await vapiPost("/call", {
       assistantId,
       phoneNumberId: PHONE_NUMBER_ID,
       customer: { number: customerNumber },
       assistantOverrides: {
         variableValues,
-        model: await buildModelOverride({ isCallback, activeSession, hasName })
+        model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
       }
     });
     console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber, isCallback, activeSession });

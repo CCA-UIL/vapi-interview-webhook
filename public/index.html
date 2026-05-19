@@ -3,17 +3,38 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Imani — Interview Call Operator</title>
+  <title>Imani — Operator Dashboard</title>
   <style>
     * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      max-width: 1280px;
+      max-width: 1400px;
       margin: 2rem auto;
       padding: 0 1.5rem;
       color: #1f2937;
       line-height: 1.5;
     }
+    .tabs {
+      display: flex; gap: 0.25rem;
+      border-bottom: 2px solid #e5e7eb;
+      margin-bottom: 1.25rem;
+    }
+    .tabs button {
+      background: none; border: none;
+      padding: 0.6rem 1.1rem;
+      font-size: 0.95rem; font-weight: 500;
+      color: #6b7280; cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      font-family: inherit;
+    }
+    .tabs button.active {
+      color: #2563eb;
+      border-bottom-color: #2563eb;
+    }
+    .tabs button:hover:not(.active) { color: #1f2937; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
     h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
     p.intro { color: #6b7280; margin-top: 0; margin-bottom: 1.5rem; font-size: 0.95rem; }
     .toolbar {
@@ -88,6 +109,52 @@
     table.calls input[type="checkbox"] { cursor: pointer; }
     tr.selected td { background: #eff6ff; }
     tr.selected.draft-row td { background: #e0eaff; }
+    /* Prescreening table */
+    .scroll-wrap { overflow-x: auto; }
+    table.pre {
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      min-width: 100%;
+    }
+    table.pre th, table.pre td {
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0.4rem 0.5rem;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    table.pre th {
+      font-weight: 600;
+      color: #374151;
+      background: #f9fafb;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      cursor: pointer;
+      user-select: none;
+    }
+    table.pre th .sort-indicator { color: #9ca3af; margin-left: 0.25rem; }
+    table.pre th.sorted-asc .sort-indicator,
+    table.pre th.sorted-desc .sort-indicator { color: #2563eb; }
+    table.pre td.about {
+      white-space: normal;
+      max-width: 320px;
+      font-style: italic;
+      color: #4b5563;
+    }
+    table.pre td.center { text-align: center; }
+    table.pre tbody tr:hover td { background: #fafafa; }
+    table.pre tbody tr.greyed td {
+      color: #9ca3af;
+      background: #f3f4f6;
+    }
+    table.pre tbody tr.greyed td.about { color: #9ca3af; }
+    table.pre tbody tr.greyed:hover td { background: #ececec; }
+    table.pre tbody tr.clickable { cursor: pointer; }
+    table.pre tbody tr.clickable:hover:not(.greyed) td { background: #eff6ff; }
+    .yn-yes { color: #065f46; font-weight: 600; }
+    .yn-no  { color: #991b1b; font-weight: 600; }
+    .yn-na  { color: #9ca3af; }
     table.calls input[type=tel],
     table.calls input[type=text],
     table.calls input[type=datetime-local] {
@@ -147,7 +214,14 @@
   </style>
 </head>
 <body>
-  <h1>Interview call operator dashboard</h1>
+  <h1>Imani operator dashboard</h1>
+
+  <div class="tabs">
+    <button type="button" id="tab-btn-interview" class="active">Interview operator</button>
+    <button type="button" id="tab-btn-prescreening">Pre-screening</button>
+  </div>
+
+<div class="tab-panel active" id="tab-interview">
   <p class="intro">
     Each row is a call. Fill in phone (with country code) and optionally a name and a scheduled time, then click <strong>Call</strong>.
     Leave the schedule blank to dial immediately.
@@ -198,6 +272,65 @@
     Names are used verbatim by Imani at call start — prefer the title + first + last form (e.g., <code>Mr. Emeka Obi</code>).
     Draft rows (light grey background) live only in this browser until you click Call. Submitted rows persist across refreshes.
   </p>
+</div><!-- /tab-interview -->
+
+<div class="tab-panel" id="tab-prescreening">
+  <p class="intro">
+    Pre-screening calls collect short answers to 12 questions and store them
+    for an analyst to review. Click a row to send the participant to the
+    Interview operator tab with phone + name pre-filled.
+  </p>
+
+  <div class="toolbar">
+    <div class="apikey" style="visibility:hidden;width:0;flex:0;">
+      <!-- API key input lives in the interview tab; we share its value. -->
+    </div>
+    <input type="tel" id="pre-phone" placeholder="+2348037642802" style="padding:0.4rem 0.55rem;border:1px solid #d1d5db;border-radius:6px;font-family:inherit;font-size:0.9rem;flex:0 0 180px;">
+    <input type="text" id="pre-name"  placeholder="Mr. Emeka Obi"   style="padding:0.4rem 0.55rem;border:1px solid #d1d5db;border-radius:6px;font-family:inherit;font-size:0.9rem;flex:0 0 200px;">
+    <input type="datetime-local" id="pre-schedule" style="padding:0.4rem 0.55rem;border:1px solid #d1d5db;border-radius:6px;font-family:inherit;font-size:0.9rem;flex:0 0 200px;" title="Blank = call immediately">
+    <button type="button" id="pre-call-btn" class="primary" style="padding:0.4rem 0.9rem;background:#2563eb;color:white;border:none;border-radius:6px;font-size:0.9rem;font-weight:500;font-family:inherit;cursor:pointer;">Pre-screen call</button>
+    <button type="button" id="pre-refresh-btn">Refresh</button>
+    <button type="button" id="pre-export-btn">Download .xlsx</button>
+  </div>
+
+  <div id="pre-status" style="display:none;padding:0.6rem 0.9rem;border-radius:6px;font-size:0.9rem;margin-bottom:1rem;white-space:pre-wrap;"></div>
+
+  <div class="scroll-wrap">
+    <table class="pre" id="pre-table">
+      <thead>
+        <tr>
+          <th data-sort="createdAt">Date <span class="sort-indicator">↕</span></th>
+          <th data-sort="phoneNumber">Phone <span class="sort-indicator">↕</span></th>
+          <th data-sort="name">Name <span class="sort-indicator">↕</span></th>
+          <th data-sort="aboutYou">About you <span class="sort-indicator">↕</span></th>
+          <th data-sort="englishInterviewOk">English <span class="sort-indicator">↕</span></th>
+          <th data-sort="robotRecordedOk">Robot OK <span class="sort-indicator">↕</span></th>
+          <th data-sort="whatsappPhotosOk">Photos <span class="sort-indicator">↕</span></th>
+          <th data-sort="mainCook">Main cook <span class="sort-indicator">↕</span></th>
+          <th data-sort="ownsEpc">Owns EPC <span class="sort-indicator">↕</span></th>
+          <th data-sort="epcUsesLastWeek">EPC/wk <span class="sort-indicator">↕</span></th>
+          <th data-sort="age">Age <span class="sort-indicator">↕</span></th>
+          <th data-sort="ownsTv">TV <span class="sort-indicator">↕</span></th>
+          <th data-sort="ownsFridge">Fridge <span class="sort-indicator">↕</span></th>
+          <th data-sort="ownsCar">Car <span class="sort-indicator">↕</span></th>
+          <th data-sort="pipedWater">Water <span class="sort-indicator">↕</span></th>
+          <th data-sort="ppiScore">PPI <span class="sort-indicator">↕</span></th>
+          <th data-sort="disqualified">DQ <span class="sort-indicator">↕</span></th>
+          <th data-sort="forceActive">Force <span class="sort-indicator">↕</span></th>
+          <th data-sort="interviewCalled">Called <span class="sort-indicator">↕</span></th>
+        </tr>
+      </thead>
+      <tbody id="pre-body"></tbody>
+    </table>
+  </div>
+
+  <p class="footnote">
+    Click anywhere on a row (outside the checkboxes) to send the participant to the
+    Interview operator tab with phone &amp; name pre-filled.
+    Disqualified or interview-called rows are greyed out unless Force is ticked.
+    The Excel download captures every column shown.
+  </p>
+</div><!-- /tab-prescreening -->
 
   <script>
     const DRAFTS_KEY = 'eric_draft_rows_v1';
@@ -557,6 +690,272 @@
 
     addRowBtn.addEventListener('click', addDraft);
     refreshBtn.addEventListener('click', () => { clearStatus(); refresh(); });
+
+    // ===== Tabs =====
+    const tabBtnInterview    = document.getElementById('tab-btn-interview');
+    const tabBtnPrescreening = document.getElementById('tab-btn-prescreening');
+    const tabInterview       = document.getElementById('tab-interview');
+    const tabPrescreening    = document.getElementById('tab-prescreening');
+    function switchTab(name) {
+      const isPre = name === 'prescreening';
+      tabBtnInterview.classList.toggle('active', !isPre);
+      tabBtnPrescreening.classList.toggle('active', isPre);
+      tabInterview.classList.toggle('active', !isPre);
+      tabPrescreening.classList.toggle('active', isPre);
+      if (isPre) refreshPrescreening();
+    }
+    tabBtnInterview.addEventListener('click', () => switchTab('interview'));
+    tabBtnPrescreening.addEventListener('click', () => switchTab('prescreening'));
+
+    // ===== Pre-screening =====
+    const preStatusEl  = document.getElementById('pre-status');
+    const preBodyEl    = document.getElementById('pre-body');
+    const preTableEl   = document.getElementById('pre-table');
+    const prePhoneEl   = document.getElementById('pre-phone');
+    const preNameEl    = document.getElementById('pre-name');
+    const preSchedEl   = document.getElementById('pre-schedule');
+    const preCallBtn   = document.getElementById('pre-call-btn');
+    const preRefBtn    = document.getElementById('pre-refresh-btn');
+    const preExportBtn = document.getElementById('pre-export-btn');
+
+    let preRows = [];
+    let preSortKey = 'createdAt';
+    let preSortDir = 'desc'; // 'asc' | 'desc'
+
+    function setPreStatus(kind, text) {
+      preStatusEl.style.display = 'block';
+      preStatusEl.style.background = kind === 'ok' ? '#d1fae5' : kind === 'err' ? '#fee2e2' : '#dbeafe';
+      preStatusEl.style.color = kind === 'ok' ? '#065f46' : kind === 'err' ? '#991b1b' : '#1e40af';
+      preStatusEl.textContent = text;
+    }
+    function clearPreStatus() { preStatusEl.style.display = 'none'; preStatusEl.textContent = ''; }
+
+    function ynCell(v) {
+      if (v === true)  return '<td class="center yn-yes">Yes</td>';
+      if (v === false) return '<td class="center yn-no">No</td>';
+      return '<td class="center yn-na">—</td>';
+    }
+    function numCell(v) {
+      return '<td class="center">' + (v == null ? '<span class="yn-na">—</span>' : v) + '</td>';
+    }
+
+    function renderPrescreeningRows() {
+      const sorted = [...preRows].sort((a, b) => {
+        let av = a[preSortKey], bv = b[preSortKey];
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        // booleans: true > false
+        if (typeof av === 'boolean') av = av ? 1 : 0;
+        if (typeof bv === 'boolean') bv = bv ? 1 : 0;
+        // dates: lex order on iso works
+        const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+        return preSortDir === 'asc' ? cmp : -cmp;
+      });
+
+      preBodyEl.innerHTML = '';
+      if (sorted.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="19" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No pre-screening responses yet. Make a pre-screen call above.</td>';
+        preBodyEl.appendChild(tr);
+        return;
+      }
+
+      for (const r of sorted) {
+        const greyed = (r.disqualified || r.interviewCalled) && !r.forceActive;
+        const tr = document.createElement('tr');
+        tr.className = 'clickable' + (greyed ? ' greyed' : '');
+        tr.dataset.id = r.id;
+        tr.dataset.phone = r.phoneNumber || '';
+        tr.dataset.name = r.name || '';
+
+        const date = r.createdAt ? new Date(r.createdAt).toLocaleString(undefined, {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+        const aboutShort = (r.aboutYou || '').slice(0, 200);
+
+        tr.innerHTML =
+          '<td>' + date + '</td>' +
+          '<td>' + (r.phoneNumber || '') + '</td>' +
+          '<td>' + (r.name || '') + '</td>' +
+          '<td class="about">' + (aboutShort ? '"' + aboutShort.replace(/"/g, '&quot;') + (r.aboutYou && r.aboutYou.length > 200 ? '…"' : '"') : '') + '</td>' +
+          ynCell(r.englishInterviewOk) +
+          ynCell(r.robotRecordedOk) +
+          ynCell(r.whatsappPhotosOk) +
+          ynCell(r.mainCook) +
+          ynCell(r.ownsEpc) +
+          numCell(r.epcUsesLastWeek) +
+          numCell(r.age) +
+          ynCell(r.ownsTv) +
+          ynCell(r.ownsFridge) +
+          ynCell(r.ownsCar) +
+          ynCell(r.pipedWater) +
+          numCell(r.ppiScore) +
+          '<td class="center"><input type="checkbox" class="dq" ' + (r.disqualified ? 'checked' : '') + '></td>' +
+          '<td class="center"><input type="checkbox" class="fa" ' + (r.forceActive ? 'checked' : '') + '></td>' +
+          '<td class="center">' + (r.interviewCalled ? '●' : '') + '</td>';
+
+        // Row click → send to interview tab (anywhere except checkboxes).
+        tr.addEventListener('click', e => {
+          if (e.target.tagName === 'INPUT') return;
+          sendToInterviewTab(r);
+        });
+        tr.querySelector('.dq').addEventListener('change', e => {
+          e.stopPropagation();
+          patchPrescreening(r.id, { disqualified: e.target.checked });
+        });
+        tr.querySelector('.fa').addEventListener('change', e => {
+          e.stopPropagation();
+          patchPrescreening(r.id, { force_active: e.target.checked });
+        });
+        preBodyEl.appendChild(tr);
+      }
+
+      // Update sort indicators
+      preTableEl.querySelectorAll('th').forEach(th => {
+        th.classList.remove('sorted-asc', 'sorted-desc');
+        const ind = th.querySelector('.sort-indicator');
+        if (ind) ind.textContent = '↕';
+        if (th.dataset.sort === preSortKey) {
+          th.classList.add(preSortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+          if (ind) ind.textContent = preSortDir === 'asc' ? '↑' : '↓';
+        }
+      });
+    }
+
+    preTableEl.querySelectorAll('th[data-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const k = th.dataset.sort;
+        if (preSortKey === k) preSortDir = preSortDir === 'asc' ? 'desc' : 'asc';
+        else { preSortKey = k; preSortDir = 'asc'; }
+        renderPrescreeningRows();
+      });
+    });
+
+    async function refreshPrescreening() {
+      const apikey = apikeyEl.value.trim();
+      if (!apikey) { setPreStatus('err', 'Enter API key in the Interview tab first.'); return; }
+      try {
+        const resp = await fetch('/prescreening-responses', { headers: { 'X-API-Key': apikey } });
+        const data = await resp.json();
+        if (resp.status === 401) { setPreStatus('err', 'Unauthorized — check the API key.'); return; }
+        if (!resp.ok || !data.ok) { setPreStatus('err', 'Error: ' + (data.error || ('HTTP ' + resp.status))); return; }
+        preRows = data.rows || [];
+        clearPreStatus();
+        renderPrescreeningRows();
+      } catch (err) {
+        setPreStatus('err', 'Network error: ' + err.message);
+      }
+    }
+
+    async function patchPrescreening(id, patch) {
+      const apikey = apikeyEl.value.trim();
+      if (!apikey) { setPreStatus('err', 'Enter API key first.'); return; }
+      try {
+        const resp = await fetch('/prescreening-responses/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apikey },
+          body: JSON.stringify(patch)
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          setPreStatus('err', 'Update failed: ' + (data.error || ('HTTP ' + resp.status)));
+          return;
+        }
+        // Update local row and rerender.
+        const row = preRows.find(r => r.id === id);
+        if (row) {
+          if ('disqualified' in patch) row.disqualified = patch.disqualified;
+          if ('force_active' in patch) row.forceActive = patch.force_active;
+          renderPrescreeningRows();
+        }
+      } catch (err) {
+        setPreStatus('err', 'Network error: ' + err.message);
+      }
+    }
+
+    function sendToInterviewTab(r) {
+      const drafts = loadDrafts();
+      drafts.push({ id: newDraftId(), phone: r.phoneNumber || '', name: r.name || '', scheduledAtLocal: '' });
+      saveDrafts(drafts);
+      switchTab('interview');
+      refresh();
+      setStatus('info', 'Added ' + (r.name || r.phoneNumber || 'participant') + ' to the interview drafts. Click Call to dial.');
+    }
+
+    preCallBtn.addEventListener('click', async () => {
+      const phone = prePhoneEl.value.trim();
+      const name = preNameEl.value.trim();
+      const scheduledAtLocal = preSchedEl.value.trim();
+      const apikey = apikeyEl.value.trim();
+      if (!phone.startsWith('+')) { setPreStatus('err', 'Phone must start with + and include country code.'); return; }
+      if (!apikey) { setPreStatus('err', 'Enter API key in the Interview tab first.'); return; }
+      preCallBtn.disabled = true;
+      setPreStatus('info', scheduledAtLocal ? 'Scheduling pre-screen call...' : 'Dialling pre-screen call...');
+      try {
+        const resp = await fetch('/start-prescreening', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apikey },
+          body: JSON.stringify({
+            customerNumber: phone,
+            name: name || undefined,
+            scheduledAtLocal: scheduledAtLocal || undefined
+          })
+        });
+        const data = await resp.json();
+        if (resp.status === 401) { setPreStatus('err', 'Unauthorized — check the API key.'); preCallBtn.disabled = false; return; }
+        if (!resp.ok || !data.ok) { setPreStatus('err', 'Error: ' + (data.error || ('HTTP ' + resp.status))); preCallBtn.disabled = false; return; }
+        setPreStatus('ok', data.scheduledAt ? ('Scheduled for ' + new Date(data.scheduledAt).toLocaleString()) : 'Call queued — the phone will ring shortly.');
+        prePhoneEl.value = ''; preNameEl.value = ''; preSchedEl.value = '';
+      } catch (err) {
+        setPreStatus('err', 'Network error: ' + err.message);
+      } finally {
+        preCallBtn.disabled = false;
+      }
+    });
+
+    preRefBtn.addEventListener('click', () => { clearPreStatus(); refreshPrescreening(); });
+
+    // ===== Excel download (SheetJS, lazy-loaded) =====
+    let xlsxPromise = null;
+    function ensureXlsx() {
+      if (xlsxPromise) return xlsxPromise;
+      xlsxPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+        s.onload = () => resolve(window.XLSX);
+        s.onerror = () => reject(new Error('Failed to load xlsx library'));
+        document.head.appendChild(s);
+      });
+      return xlsxPromise;
+    }
+
+    preExportBtn.addEventListener('click', async () => {
+      if (preRows.length === 0) { setPreStatus('err', 'Nothing to export.'); return; }
+      setPreStatus('info', 'Building xlsx...');
+      try {
+        const XLSX = await ensureXlsx();
+        const header = [
+          'Date','Phone','Name','About you',
+          'English (Q2)','Robot+Recorded (Q3)','WhatsApp photos (Q4)','Main cook (Q5)','Owns EPC (Q6)',
+          'EPC uses last week (Q7)','Age (Q8)','TV (Q9)','Fridge (Q10)','Car (Q11)','Piped water (Q12)',
+          'PPI score','Disqualified','Force active','Interview-called','Analyst notes','Vapi call ID','Participant ID'
+        ];
+        const body = preRows.map(r => [
+          r.createdAt || '', r.phoneNumber || '', r.name || '', r.aboutYou || '',
+          r.englishInterviewOk, r.robotRecordedOk, r.whatsappPhotosOk, r.mainCook, r.ownsEpc,
+          r.epcUsesLastWeek, r.age, r.ownsTv, r.ownsFridge, r.ownsCar, r.pipedWater,
+          r.ppiScore, r.disqualified, r.forceActive, r.interviewCalled,
+          r.analystNotes || '', r.vapiCallId || '', r.participantId || ''
+        ]);
+        const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Prescreening');
+        const filename = 'prescreening_' + new Date().toISOString().slice(0,10) + '.xlsx';
+        XLSX.writeFile(wb, filename);
+        setPreStatus('ok', 'Downloaded ' + filename);
+      } catch (err) {
+        setPreStatus('err', 'Export failed: ' + err.message);
+      }
+    });
 
     // Initial render
     refresh();
