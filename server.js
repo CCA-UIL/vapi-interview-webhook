@@ -1389,6 +1389,34 @@ app.get("/prescreening-responses", async (req, res) => {
 });
 
 /**
+ * DELETE /prescreening-responses/:id
+ * Hard-delete a prescreening row from the analyst dashboard. The
+ * participant row is left alone (they may have other history). Auth:
+ * same X-API-Key gate.
+ */
+app.delete("/prescreening-responses/:id", async (req, res) => {
+  try {
+    if (START_CALL_API_KEY) {
+      const provided = req.header("X-API-Key");
+      if (provided !== START_CALL_API_KEY) {
+        return res.status(401).json({ error: "Unauthorized: missing or invalid X-API-Key header" });
+      }
+    }
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: "Missing id" });
+    const { error } = await supabase
+      .from("prescreening_responses")
+      .delete()
+      .eq("id", id);
+    if (error) throw error;
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /prescreening-responses error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/**
  * PATCH /prescreening-responses/:id
  * Analyst-controlled flags: disqualified, force_active, analyst_notes.
  * Body: any subset of those fields. Auth: same X-API-Key gate.

@@ -318,6 +318,7 @@
           <th data-sort="disqualified" title="Disqualified: when ticked, the row is greyed out and the participant is treated as eliminated.">Disqualify <span class="sort-indicator">↕</span></th>
           <th data-sort="forceActive" title="Force show: overrides greying so the row stays visible/active even when disqualified or interview-called.">Force show <span class="sort-indicator">↕</span></th>
           <th data-sort="interviewCalled" title="Auto-derived. Shows ● when an interview call has been placed for this participant.">Called <span class="sort-indicator">↕</span></th>
+          <th title="Delete this row from the table permanently.">Actions</th>
         </tr>
       </thead>
       <tbody id="pre-body"></tbody>
@@ -764,7 +765,7 @@
       preBodyEl.innerHTML = '';
       if (sorted.length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="19" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No pre-screening responses yet. Make a pre-screen call above.</td>';
+        tr.innerHTML = '<td colspan="20" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No pre-screening responses yet. Make a pre-screen call above.</td>';
         preBodyEl.appendChild(tr);
         return;
       }
@@ -799,7 +800,8 @@
           numCell(r.ppiScore) +
           '<td class="center"><input type="checkbox" class="dq" ' + (r.disqualified ? 'checked' : '') + '></td>' +
           '<td class="center"><input type="checkbox" class="fa" ' + (r.forceActive ? 'checked' : '') + '></td>' +
-          '<td class="center">' + (r.interviewCalled ? '●' : '') + '</td>';
+          '<td class="center">' + (r.interviewCalled ? '●' : '') + '</td>' +
+          '<td class="center"><button type="button" class="row-delete" style="padding:0.25rem 0.55rem;border:none;border-radius:4px;background:#fee2e2;color:#991b1b;font-size:0.8rem;cursor:pointer;font-family:inherit;">Delete</button></td>';
 
         // Row click → send to interview tab (anywhere except checkboxes).
         tr.addEventListener('click', e => {
@@ -813,6 +815,10 @@
         tr.querySelector('.fa').addEventListener('change', e => {
           e.stopPropagation();
           patchPrescreening(r.id, { force_active: e.target.checked });
+        });
+        tr.querySelector('.row-delete').addEventListener('click', e => {
+          e.stopPropagation();
+          deletePrescreeningRow(r);
         });
         preBodyEl.appendChild(tr);
       }
@@ -849,6 +855,29 @@
         preRows = data.rows || [];
         clearPreStatus();
         renderPrescreeningRows();
+      } catch (err) {
+        setPreStatus('err', 'Network error: ' + err.message);
+      }
+    }
+
+    async function deletePrescreeningRow(r) {
+      const apikey = apikeyEl.value.trim();
+      if (!apikey) { setPreStatus('err', 'Enter API key first.'); return; }
+      const who = r.name || r.phoneNumber || 'this row';
+      if (!confirm('Delete the pre-screening row for ' + who + '? This is permanent and removes the response from the dashboard. The participant record itself is kept.')) return;
+      try {
+        const resp = await fetch('/prescreening-responses/' + encodeURIComponent(r.id), {
+          method: 'DELETE',
+          headers: { 'X-API-Key': apikey }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 401) { setPreStatus('err', 'Unauthorized — check the API key.'); return; }
+        if (!resp.ok || !data.ok) { setPreStatus('err', 'Delete failed: ' + (data.error || ('HTTP ' + resp.status))); return; }
+        // Drop locally and rerender so the row goes away immediately, then
+        // refresh from server to reconcile.
+        preRows = preRows.filter(x => x.id !== r.id);
+        renderPrescreeningRows();
+        setPreStatus('ok', 'Deleted row for ' + who + '.');
       } catch (err) {
         setPreStatus('err', 'Network error: ' + err.message);
       }
