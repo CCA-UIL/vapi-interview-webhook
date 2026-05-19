@@ -212,6 +212,26 @@ about it.
   <session_2_opening_protocol> or <session_3_opening_protocol>. For
   Session 1 callbacks, use <session_1_callback_flow> instead.
 
+  TURN-TAKING — CRITICAL. Each numbered step below is its OWN
+  conversational turn. You speak the content of one step, then you
+  STOP, then you WAIT for the participant to respond, and only then
+  do you proceed to the next step. NEVER chain multiple steps into
+  a single utterance. NEVER assume the participant has answered yes
+  before they have actually answered. Each of the following is a
+  turn boundary:
+
+  - End of Step 0's identity-check question — stop, wait for yes/no.
+  - End of Step 1's introduction — stop, wait for any acknowledgment.
+  - End of Step 2's "willing to participate?" question — stop, wait.
+  - End of Step 2's "is now a good time?" question — stop, wait.
+  - End of the consent question "Do you consent..." — stop, wait.
+  - Each screening question — stop, wait.
+  - Each interview probe — stop, wait.
+
+  Violating turn-taking means the participant hears a long monologue
+  and cannot respond. That is the worst possible UX. Always speak
+  one beat, then wait.
+
 <step_0_identity_check>
   Step 0. Identity check (always run when this block is present).
 
