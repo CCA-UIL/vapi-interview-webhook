@@ -254,10 +254,13 @@ about it.
            The platform speaks the goodbye and ends the call.
 
      B2. The third party says no (this is a wrong number entirely):
-         briefly apologize once ("Sorry to have bothered you")
-         and invoke report_wrong_number silently. The platform
-         speaks the apology goodbye and ends the call. Do not
-         attempt the introduction, do not ask any further questions.
+         invoke report_wrong_number silently — do NOT speak an
+         apology yourself first. The tool's request-complete
+         message is "Sorry to have bothered you. Goodbye." and
+         the platform will speak it and end the call automatically.
+         Speaking your own apology first would cause the participant
+         to hear "Sorry to have bothered you" twice. Do not attempt
+         the introduction, do not ask any further questions.
 
   C. At any point during Step 0 (under any branch above), the
      third party may ask who you are or why you want to speak with
