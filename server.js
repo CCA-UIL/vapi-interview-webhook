@@ -737,12 +737,45 @@ app.get("/scheduled-calls", async (req, res) => {
     const nowIso = new Date().toISOString();
     const { data: scheduled, error: schedErr } = await supabase
       .from("scheduled_calls")
-      .select("scheduled_at, session_number, vapi_call_id, participant_id, status")
+      .select("id, scheduled_at, session_number, vapi_call_id, participant_id, status")
       .gt("scheduled_at", nowIso)
+      .neq("status", "cancelled")
       .order("scheduled_at", { ascending: true });
     if (schedErr) throw schedErr;
 
-    const participantIds = [...new Set((scheduled || []).map(s => s.participant_id).filter(Boolean))];
+    // For every row that has a vapi_call_id, verify the Vapi-side call is
+    // still in "scheduled" status. Rows whose Vapi call has been deleted or
+    // ended out-of-band become stale otherwise — the participant won't be
+    // dialled but the dashboard would keep listing the call as upcoming.
+    // Mark such rows as cancelled in Supabase so we don't re-check on every
+    // dashboard load.
+    const verifications = await Promise.all((scheduled || []).map(async (s) => {
+      if (!s.vapi_call_id) return { row: s, live: true };
+      try {
+        const resp = await fetch(`https://api.vapi.ai/call/${s.vapi_call_id}`, {
+          headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
+        });
+        if (resp.status === 404) return { row: s, live: false };
+        if (!resp.ok) return { row: s, live: true }; // transient — keep showing
+        const call = await resp.json();
+        return { row: s, live: call.status === "scheduled" };
+      } catch {
+        return { row: s, live: true }; // network blip — keep showing
+      }
+    }));
+
+    const staleIds = verifications.filter(v => !v.live).map(v => v.row.id);
+    if (staleIds.length > 0) {
+      const { error: updateErr } = await supabase
+        .from("scheduled_calls")
+        .update({ status: "cancelled" })
+        .in("id", staleIds);
+      if (updateErr) console.warn("Failed to mark stale rows cancelled:", updateErr.message);
+    }
+
+    const liveRows = verifications.filter(v => v.live).map(v => v.row);
+
+    const participantIds = [...new Set(liveRows.map(s => s.participant_id).filter(Boolean))];
     let participantsById = {};
     if (participantIds.length > 0) {
       const { data: parts, error: partErr } = await supabase
@@ -753,7 +786,7 @@ app.get("/scheduled-calls", async (req, res) => {
       participantsById = Object.fromEntries((parts || []).map(p => [p.id, p]));
     }
 
-    const rows = (scheduled || []).map(s => {
+    const rows = liveRows.map(s => {
       const p = participantsById[s.participant_id] || {};
       return {
         scheduledAt: s.scheduled_at,
