@@ -413,6 +413,20 @@ async function recordScheduledCall({ participantId, sessionNumber, scheduledAt, 
   if (error) console.error("recordScheduledCall failed:", error.message);
 }
 
+// Update the scheduled_calls row whose vapi_call_id matches the just-ended
+// call. Each attempt now carries its own outcome (status). Avoids the
+// "join by (participant, session)" problem where two attempts to the same
+// (participant, session_number) would share one sessions row and lose the
+// older attempt's outcome.
+async function updateScheduledCallStatusByVapiId(vapiCallId, status) {
+  if (!vapiCallId || !status) return;
+  const { error } = await supabase
+    .from("scheduled_calls")
+    .update({ status })
+    .eq("vapi_call_id", vapiCallId);
+  if (error) console.warn("updateScheduledCallStatusByVapiId failed:", error.message);
+}
+
 // =============================================================================
 // Vapi API wrappers
 // =============================================================================
@@ -916,14 +930,19 @@ app.get("/scheduled-calls", async (req, res) => {
       .order("scheduled_at", { ascending: true });
     if (schedErr) throw schedErr;
 
-    // For FUTURE rows that have a vapi_call_id, verify the Vapi-side call is
-    // still in "scheduled" status. Rows whose Vapi call has been deleted or
-    // ended out-of-band become stale otherwise. Past rows we leave alone
-    // (their Vapi status will be "ended" by now, not stale).
+    // Reconcile each row against Vapi:
+    // - Future rows still scheduled on Vapi → live, status='sent'.
+    // - Future rows whose Vapi call was deleted/ended → mark cancelled.
+    // - Past rows with status='sent' but Vapi call has ended → backfill
+    //   status from Vapi's endedReason. Catches old rows that pre-date
+    //   the per-row outcome tracking, and any row where end-of-call-report
+    //   somehow missed updating us.
     const nowMs = Date.now();
     const verifications = await Promise.all((scheduled || []).map(async (s) => {
+      if (!s.vapi_call_id) return { row: s, live: true };
       const isFuture = new Date(s.scheduled_at).getTime() > nowMs;
-      if (!isFuture || !s.vapi_call_id) return { row: s, live: true };
+      const needsReconcile = isFuture || s.status === "sent";
+      if (!needsReconcile) return { row: s, live: true };
       try {
         const resp = await fetch(`https://api.vapi.ai/call/${s.vapi_call_id}`, {
           headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
@@ -931,7 +950,14 @@ app.get("/scheduled-calls", async (req, res) => {
         if (resp.status === 404) return { row: s, live: false };
         if (!resp.ok) return { row: s, live: true };
         const call = await resp.json();
-        return { row: s, live: call.status === "scheduled" };
+        if (call.status === "scheduled") return { row: s, live: true };
+        if (call.status === "ended" && s.status === "sent") {
+          // Backfill: derive a status from endedReason and persist.
+          const derived = mapEndedReasonToStatus(call.endedReason);
+          return { row: { ...s, status: derived }, live: true, backfillTo: derived };
+        }
+        // Ended call already reconciled (status != 'sent').
+        return { row: s, live: true };
       } catch {
         return { row: s, live: true };
       }
@@ -946,9 +972,14 @@ app.get("/scheduled-calls", async (req, res) => {
       if (updateErr) console.warn("Failed to mark stale rows cancelled:", updateErr.message);
     }
 
+    const backfills = verifications.filter(v => v.live && v.backfillTo);
+    await Promise.all(backfills.map(v =>
+      supabase.from("scheduled_calls").update({ status: v.backfillTo }).eq("id", v.row.id)
+    ));
+
     const liveRows = verifications.filter(v => v.live).map(v => v.row);
 
-    // Bulk-fetch participants and matching sessions for the dashboard rows.
+    // Bulk-fetch participants for phone/name display.
     const participantIds = [...new Set(liveRows.map(s => s.participant_id).filter(Boolean))];
     let participantsById = {};
     if (participantIds.length > 0) {
@@ -960,26 +991,12 @@ app.get("/scheduled-calls", async (req, res) => {
       participantsById = Object.fromEntries((parts || []).map(p => [p.id, p]));
     }
 
-    // Sessions keyed by (participant_id, session_number) — that's the unique
-    // index. Used to derive call status / notes for the dashboard.
-    let sessionsByKey = {};
-    if (participantIds.length > 0) {
-      const sessionNumbers = [...new Set(liveRows.map(s => s.session_number).filter(Boolean))];
-      const { data: sess, error: sessErr } = await supabase
-        .from("sessions")
-        .select("participant_id, session_number, status, started_at, completed_at, call_id")
-        .in("participant_id", participantIds)
-        .in("session_number", sessionNumbers);
-      if (sessErr) console.warn("Sessions join failed:", sessErr.message);
-      sessionsByKey = Object.fromEntries(
-        (sess || []).map(s => [`${s.participant_id}:${s.session_number}`, s])
-      );
-    }
-
     const rows = liveRows.map(s => {
       const p = participantsById[s.participant_id] || {};
-      const sess = sessionsByKey[`${s.participant_id}:${s.session_number}`] || {};
-      const callStatus = sess.status || "scheduled";
+      // scheduled_calls.status is the per-attempt outcome. "sent" means
+      // the call was placed/scheduled but no outcome recorded yet — show
+      // as "scheduled" in the dashboard.
+      const callStatus = s.status === "sent" ? "scheduled" : s.status;
       return {
         scheduledCallId: s.id,
         scheduledAt: s.scheduled_at,
@@ -989,9 +1006,7 @@ app.get("/scheduled-calls", async (req, res) => {
         vapiCallId: s.vapi_call_id,
         callStatus,
         notes: statusToNotesLabel(callStatus),
-        completed: ["completed", "completed_at_cap"].includes(callStatus),
-        startedAt: sess.started_at || null,
-        completedAt: sess.completed_at || null
+        completed: ["completed", "completed_at_cap"].includes(callStatus)
       };
     });
 
@@ -1307,6 +1322,7 @@ app.post("/vapi", async (req, res) => {
       // ---- report_wrong_number: third party confirmed this is a wrong number ----
       if (fn?.name === "report_wrong_number") {
         const customerNumber = message?.call?.customer?.number;
+        const currentVapiCallId = message?.call?.id;
         try {
           const { data: p } = await supabase
             .from("participants")
@@ -1326,6 +1342,7 @@ app.post("/vapi", async (req, res) => {
         } catch (e) {
           console.error("report_wrong_number persistence failed:", e);
         }
+        await updateScheduledCallStatusByVapiId(currentVapiCallId, "wrong_number");
         return res.json({
           results: [{
             toolCallId: toolCall.toolCallId || toolCall.id,
@@ -1398,6 +1415,12 @@ app.post("/vapi", async (req, res) => {
         } catch (e) {
           console.error("schedule_first_attempt persistence failed:", e);
         }
+
+        // Mark the CURRENT call's scheduled_calls row (not the newly-
+        // scheduled future one) as rescheduled_unreached, so the dashboard
+        // accurately shows what happened on this attempt.
+        const currentVapiCallId = message?.call?.id;
+        await updateScheduledCallStatusByVapiId(currentVapiCallId, "rescheduled_unreached");
 
         return res.json({
           results: [{
@@ -1577,20 +1600,27 @@ app.post("/vapi", async (req, res) => {
           .eq("call_id", callId)
           .maybeSingle();
         const toolSetTerminals = new Set(["wrong_number", "rescheduled_unreached"]);
+        let finalStatus;
         if (existing && toolSetTerminals.has(existing.status)) {
-          // Just persist the transcript; leave status as set by the tool.
+          finalStatus = existing.status;
           await updateSessionByCallId(callId, {
             completed_at: new Date().toISOString(),
             transcript: transcriptStructured || (transcript ? { plain: transcript } : null)
           });
         } else {
-          const status = mapEndedReasonToStatus(endedReason);
+          finalStatus = mapEndedReasonToStatus(endedReason);
           await updateSessionByCallId(callId, {
-            status,
+            status: finalStatus,
             completed_at: new Date().toISOString(),
             transcript: transcriptStructured || (transcript ? { plain: transcript } : null)
           });
         }
+        // Mirror the final status onto the matching scheduled_calls row so
+        // the dashboard can show per-attempt outcomes accurately. Each
+        // attempt has its own scheduled_calls row keyed by vapi_call_id;
+        // joining sessions by (participant, session_number) would lose
+        // older attempts when newer ones overwrite the sessions row.
+        await updateScheduledCallStatusByVapiId(callId, finalStatus);
       }
 
       if (customerNumber) {
