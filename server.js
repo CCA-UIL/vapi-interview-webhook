@@ -492,9 +492,19 @@ async function handlePrescreeningEndOfCall({ message, call, customerNumber, call
     }
 
     const ppi = computePpiScore(data);
+    // Snapshot the name that was used for THIS specific call. The
+    // participants table can be updated later, but we want the
+    // prescreening row to show what name (if any) was provided when
+    // this call was placed.
+    const nameAtCall = (
+      call?.assistantOverrides?.variableValues?.PARTICIPANT_NAME ||
+      message?.call?.assistantOverrides?.variableValues?.PARTICIPANT_NAME ||
+      ""
+    ).trim();
     const row = {
       participant_id: p.id,
       vapi_call_id: callId,
+      name_at_call: nameAtCall || null,
       about_you_text: data.about_you_text ?? null,
       english_interview_ok: data.english_interview_ok ?? null,
       robot_recorded_ok: data.robot_recorded_ok ?? null,
@@ -1341,7 +1351,10 @@ app.get("/prescreening-responses", async (req, res) => {
         id: r.id,
         participantId: r.participant_id,
         phoneNumber: p.phone_number || null,
-        name: p.name || null,
+        // Name displayed is the per-call snapshot, NOT participants.name.
+        // Old rows without a snapshot show blank — the user has confirmed
+        // they don't care about historical accuracy.
+        name: r.name_at_call || null,
         vapiCallId: r.vapi_call_id,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
