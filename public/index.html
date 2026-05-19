@@ -696,13 +696,21 @@
     const tabBtnPrescreening = document.getElementById('tab-btn-prescreening');
     const tabInterview       = document.getElementById('tab-interview');
     const tabPrescreening    = document.getElementById('tab-prescreening');
+    let preAutoRefreshTimer = null;
     function switchTab(name) {
       const isPre = name === 'prescreening';
       tabBtnInterview.classList.toggle('active', !isPre);
       tabBtnPrescreening.classList.toggle('active', isPre);
       tabInterview.classList.toggle('active', !isPre);
       tabPrescreening.classList.toggle('active', isPre);
-      if (isPre) refreshPrescreening();
+      // Auto-refresh while the prescreening tab is active so freshly-
+      // completed calls show up without the user having to click Refresh.
+      // 15s cadence is light enough to not stress the server.
+      if (preAutoRefreshTimer) { clearInterval(preAutoRefreshTimer); preAutoRefreshTimer = null; }
+      if (isPre) {
+        refreshPrescreening();
+        preAutoRefreshTimer = setInterval(refreshPrescreening, 15000);
+      }
     }
     tabBtnInterview.addEventListener('click', () => switchTab('interview'));
     tabBtnPrescreening.addEventListener('click', () => switchTab('prescreening'));

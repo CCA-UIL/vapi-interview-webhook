@@ -1486,6 +1486,18 @@ app.post("/vapi", async (req, res) => {
 
       if (status === "in-progress" && callId && !timersScheduledForCallId.has(callId)) {
         timersScheduledForCallId.add(callId);
+
+        // Detect call kind. Prescreening calls are short and do not need
+        // the interview's three-stage close-out (wrap-up signal, force
+        // close, hard cap), nor do they have a sessions row to update.
+        // Skip all of that and let the bot's own end-of-flow close out
+        // naturally.
+        const callKind = message?.call?.assistantOverrides?.variableValues?.CALL_KIND || "interview";
+        if (callKind === "prescreening") {
+          console.log("status-update in-progress: prescreening call, skipping interview close-out timers", { callId });
+          return res.json({});
+        }
+
         await updateSessionByCallId(callId, {
           status: "in_progress",
           started_at: new Date().toISOString()
