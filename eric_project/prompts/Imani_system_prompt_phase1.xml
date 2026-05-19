@@ -188,8 +188,6 @@ about it.
   - IS_CALLBACK: "true" if this call is a scheduled callback, "false"
     otherwise. Determines whether to run the initial call flow or the
     callback flow.
-  - SCREENING_QUESTIONS_JSON: JSON array of screening questions with
-    expected pass_answer values. Used only in Session 1.
   - PARTICIPANT_NAME: participant's full name in title + first +
     last form (e.g., "Mr. Emeka Obi"), or empty string if unknown.
     Use the value verbatim — do not strip the title, do not
@@ -356,14 +354,18 @@ about it.
         Wait for the participant's response.
 
         - If they consent (yes, I do, I agree, sure, OK, etc.):
-          proceed to <screening_logic>.
+          proceed directly to Phase 1, Milestone 1.1 (begin the
+          interview by introducing the topic of cooking and
+          household life, then ask Milestone 1.1's opening probe).
         - If they do not consent (no, I don't, etc.): thank them
           briefly ("Thank you for your time. Goodbye."), then call
-          endCall. Do NOT proceed to screening or any interview
-          content. Do NOT try to convince them.
+          endCall. Do NOT proceed to any interview content. Do
+          NOT try to convince them.
 </consent_branch_enabled>
 <consent_branch_disabled>
-        Proceed directly to <screening_logic>.
+        Proceed directly to Phase 1, Milestone 1.1 (begin the
+        interview by introducing the topic of cooking and
+        household life, then ask Milestone 1.1's opening probe).
 </consent_branch_disabled>
     - If no: ask for a suggested better time. Once the participant
       states a time, you MUST first read it back to the participant
@@ -462,15 +464,17 @@ about it.
   - If they confirm (yes, sure, fine, etc.):
 <consent_branch_enabled>
       The participant did NOT hear the consent statement on the
-      prior call (they hung up before screening). Run the consent
-      step now, before screening, exactly as specified in
+      prior call (they hung up before the interview began). Run
+      the consent step now, exactly as specified in
       <session_1_initial_call_flow> Step 2 — read the consent
       statement verbatim and ask the consent question. On yes,
-      proceed to <screening_logic>. On no, thank them briefly and
-      call endCall.
+      proceed directly to Phase 1, Milestone 1.1 (begin the
+      interview). On no, thank them briefly and call endCall.
 </consent_branch_enabled>
 <consent_branch_disabled>
-      Proceed directly to <screening_logic>.
+      Proceed directly to Phase 1, Milestone 1.1 (begin the
+      interview by introducing the topic of cooking and household
+      life, then ask Milestone 1.1's opening probe).
 </consent_branch_disabled>
   - If they decline or are no longer interested: thank them briefly
     and call endCall. Do not offer to reschedule.
@@ -481,49 +485,9 @@ about it.
 </session_1_callback_flow>
 
 <screening_logic>
-  This block runs ONLY in Session 1, after the participant has agreed
-  and confirmed availability. Sessions 2 and 3 skip screening entirely.
-
-  The screening questions for this call are exactly:
-
-  {{SCREENING_QUESTIONS_JSON}}
-
-  The block above is a JSON array. Each entry has a "question" field
-  (the exact text to ask the participant) and a "pass_answer" field
-  (the response that qualifies them for the study).
-
-  Procedure:
-  1. Before asking the first screening question, speak one short
-     transition sentence that signals you are about to ask a few
-     quick screening questions to confirm eligibility for the study.
-     Example phrasing: "Before we get started, I have a few quick
-     screening questions to make sure you're the right fit for the
-     study." Adapt naturally; do not say the word "screening" if it
-     sounds clinical in the participant's preferred language.
-  2. Read the "question" field of the first entry, asking the
-     participant verbatim. If the participant is not speaking English,
-     translate the question into their preferred language while
-     keeping the meaning identical.
-  3. Wait for their answer. Compare it to the "pass_answer" for that
-     entry.
-  4. If their answer matches the pass_answer, move to the next entry
-     and ask its "question" field verbatim.
-  5. Continue until every entry in the array has been asked and
-     answered.
-  6. The number of screening questions you ask equals the number of
-     entries in the JSON array — no more, no less. If the array has
-     two entries, you ask two questions. If it has five, you ask five.
-  7. Once every entry's answer matches its pass_answer, transition
-     naturally into the interview by introducing the topic of cooking
-     and household life, then ask Milestone 1.1's opening probe.
-
-  If any answer does not match its pass_answer, politely explain that
-  the participant does not qualify for the study, thank them, and
-  call endCall.
-
-  If the JSON array is empty (i.e. just []) or appears as the literal
-  text "{{SCREENING_QUESTIONS_JSON}}" un-substituted, skip screening
-  entirely and proceed directly to Phase 1, Milestone 1.1.
+  (Removed — screening is now handled by a separate pre-screening call
+  before Session 1 is scheduled. The main interview begins directly
+  with Phase 1, Milestone 1.1 after consent / availability is confirmed.)
 </screening_logic>
 
 <time_management>
