@@ -315,6 +315,8 @@
           <th data-sort="ownsCar">Car <span class="sort-indicator">↕</span></th>
           <th data-sort="pipedWater">Water <span class="sort-indicator">↕</span></th>
           <th data-sort="ppiScore">PPI <span class="sort-indicator">↕</span></th>
+          <th data-sort="needsFollowup" title="True if the participant raised a question during screening that the bot punted as needing follow-up (e.g., about payment). Reach out to the participant.">Follow-up? <span class="sort-indicator">↕</span></th>
+          <th data-sort="followupNotes" title="Short note about what the participant asked.">Follow-up details <span class="sort-indicator">↕</span></th>
           <th data-sort="disqualified" title="Disqualified: when ticked, the row is greyed out and the participant is treated as eliminated.">Disqualify <span class="sort-indicator">↕</span></th>
           <th data-sort="forceActive" title="Force show: overrides greying so the row stays visible/active even when disqualified or interview-called.">Force show <span class="sort-indicator">↕</span></th>
           <th data-sort="interviewCalled" title="Auto-derived. Shows ● when an interview call has been placed for this participant.">Called <span class="sort-indicator">↕</span></th>
@@ -765,7 +767,7 @@
       preBodyEl.innerHTML = '';
       if (sorted.length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="20" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No screening responses yet. Make a screening call above.</td>';
+        tr.innerHTML = '<td colspan="22" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No screening responses yet. Make a screening call above.</td>';
         preBodyEl.appendChild(tr);
         return;
       }
@@ -798,6 +800,8 @@
           ynCell(r.ownsCar) +
           ynCell(r.pipedWater) +
           numCell(r.ppiScore) +
+          '<td class="center" style="' + (r.needsFollowup ? 'background:#fef3c7;color:#92400e;font-weight:600;' : '') + '">' + (r.needsFollowup ? '⚠️ Yes' : '<span class="yn-na">No</span>') + '</td>' +
+          '<td class="about" style="' + (r.needsFollowup ? 'background:#fef3c7;' : '') + '">' + (r.followupNotes ? r.followupNotes.replace(/"/g, '&quot;') : '') + '</td>' +
           '<td class="center"><input type="checkbox" class="dq" ' + (r.disqualified ? 'checked' : '') + '></td>' +
           '<td class="center"><input type="checkbox" class="fa" ' + (r.forceActive ? 'checked' : '') + '></td>' +
           '<td class="center">' + (r.interviewCalled ? '●' : '') + '</td>' +
@@ -974,13 +978,14 @@
           'Date','Phone','Name','About you',
           'English (Q2)','Robot+Recorded (Q3)','WhatsApp photos (Q4)','Main cook (Q5)','Owns EPC (Q6)',
           'EPC uses last week (Q7)','Age (Q8)','TV (Q9)','Fridge (Q10)','Car (Q11)','Piped water (Q12)',
-          'PPI score','Disqualified','Force active','Interview-called','Analyst notes','Vapi call ID','Participant ID'
+          'PPI score','Needs follow-up','Follow-up details','Disqualified','Force active','Interview-called','Analyst notes','Vapi call ID','Participant ID'
         ];
         const body = preRows.map(r => [
           r.createdAt || '', r.phoneNumber || '', r.name || '', r.aboutYou || '',
           r.englishInterviewOk, r.robotRecordedOk, r.whatsappPhotosOk, r.mainCook, r.ownsEpc,
           r.epcUsesLastWeek, r.age, r.ownsTv, r.ownsFridge, r.ownsCar, r.pipedWater,
-          r.ppiScore, r.disqualified, r.forceActive, r.interviewCalled,
+          r.ppiScore, r.needsFollowup, r.followupNotes || '',
+          r.disqualified, r.forceActive, r.interviewCalled,
           r.analystNotes || '', r.vapiCallId || '', r.participantId || ''
         ]);
         const ws = XLSX.utils.aoa_to_sheet([header, ...body]);

@@ -518,6 +518,8 @@ async function handlePrescreeningEndOfCall({ message, call, customerNumber, call
       owns_car: data.owns_car ?? null,
       piped_water: data.piped_water ?? null,
       ppi_score: ppi,
+      needs_followup: data.needs_followup ?? false,
+      followup_notes: data.followup_notes || null,
       raw_extraction: data,
       updated_at: new Date().toISOString()
     };
@@ -663,7 +665,15 @@ const PRESCREENING_SCHEMA = {
     owns_tv: { type: "boolean", description: "Q9: Owns a television." },
     owns_fridge: { type: "boolean", description: "Q10: Owns a refrigerator." },
     owns_car: { type: "boolean", description: "Q11: Owns a private car or van." },
-    piped_water: { type: "boolean", description: "Q12: Has piped water at home." }
+    piped_water: { type: "boolean", description: "Q12: Has piped water at home." },
+    needs_followup: {
+      type: "boolean",
+      description: "True if the participant raised any question during the call that the bot punted with the standard phrasing 'someone from the team will follow up'. Includes any question about payment/money/compensation/incentives, or any other off-FAQ question. False if the participant did not ask any follow-up-needed question."
+    },
+    followup_notes: {
+      type: "string",
+      description: "If needs_followup is true, a short 1-line summary of what the participant asked about (e.g., 'Asked about payment / compensation', 'Wanted to know who funds the study'). Concatenate multiple items with semicolons. Leave empty if needs_followup is false."
+    }
   },
   required: []
 };
@@ -1372,6 +1382,8 @@ app.get("/prescreening-responses", async (req, res) => {
         ownsCar: r.owns_car,
         pipedWater: r.piped_water,
         ppiScore: r.ppi_score,
+        needsFollowup: r.needs_followup,
+        followupNotes: r.followup_notes,
         // Analyst flags
         disqualified: r.disqualified,
         forceActive: r.force_active,
