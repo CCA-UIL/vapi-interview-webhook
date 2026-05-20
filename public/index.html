@@ -138,7 +138,8 @@
     table.pre th.sorted-desc .sort-indicator { color: #2563eb; }
     table.pre td.about {
       white-space: normal;
-      max-width: 320px;
+      min-width: 640px;
+      max-width: 1280px;
       font-style: italic;
       color: #4b5563;
     }
@@ -788,7 +789,7 @@
         tr.dataset.name = r.name || '';
 
         const date = r.createdAt ? new Date(r.createdAt).toLocaleString(undefined, {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
-        const aboutShort = (r.aboutYou || '').slice(0, 200);
+        const aboutShort = (r.aboutYou || '').slice(0, 800);
 
         const durCell = r.durationSeconds != null && r.durationSeconds < 60
           ? '<td class="center" style="color:#991b1b;font-weight:600;" title="Short call — likely ended prematurely.">' + formatDuration(r.durationSeconds) + '</td>'
@@ -798,7 +799,7 @@
           durCell +
           '<td>' + (r.phoneNumber || '') + '</td>' +
           '<td>' + (r.name || '') + '</td>' +
-          '<td class="about">' + (aboutShort ? '"' + aboutShort.replace(/"/g, '&quot;') + (r.aboutYou && r.aboutYou.length > 200 ? '…"' : '"') : '') + '</td>' +
+          '<td class="about">' + (aboutShort ? '"' + aboutShort.replace(/"/g, '&quot;') + (r.aboutYou && r.aboutYou.length > 800 ? '…"' : '"') : '') + '</td>' +
           ynCell(r.englishInterviewOk) +
           ynCell(r.robotRecordedOk) +
           ynCell(r.whatsappPhotosOk) +
