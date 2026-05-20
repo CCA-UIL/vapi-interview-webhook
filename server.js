@@ -501,10 +501,20 @@ async function handlePrescreeningEndOfCall({ message, call, customerNumber, call
       message?.call?.assistantOverrides?.variableValues?.PARTICIPANT_NAME ||
       ""
     ).trim();
+    // Compute call duration so the dashboard can flag short / aborted
+    // screening calls.
+    const startedAt = call?.startedAt || message?.call?.startedAt;
+    const endedAt   = call?.endedAt   || message?.call?.endedAt;
+    let durationSeconds = null;
+    if (startedAt && endedAt) {
+      const ms = new Date(endedAt).getTime() - new Date(startedAt).getTime();
+      if (!isNaN(ms) && ms > 0) durationSeconds = Math.round(ms / 1000);
+    }
     const row = {
       participant_id: p.id,
       vapi_call_id: callId,
       name_at_call: nameAtCall || null,
+      duration_seconds: durationSeconds,
       about_you_text: data.about_you_text ?? null,
       english_interview_ok: data.english_interview_ok ?? null,
       robot_recorded_ok: data.robot_recorded_ok ?? null,
@@ -1368,6 +1378,7 @@ app.get("/prescreening-responses", async (req, res) => {
         vapiCallId: r.vapi_call_id,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
+        durationSeconds: r.duration_seconds,
         // Responses
         aboutYou: r.about_you_text,
         englishInterviewOk: r.english_interview_ok,

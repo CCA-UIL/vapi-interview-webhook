@@ -300,6 +300,7 @@
       <thead>
         <tr>
           <th data-sort="createdAt">Date <span class="sort-indicator">↕</span></th>
+          <th data-sort="durationSeconds" title="Call length. A short duration (well under ~2 minutes) usually means the call ended prematurely.">Duration <span class="sort-indicator">↕</span></th>
           <th data-sort="phoneNumber">Phone <span class="sort-indicator">↕</span></th>
           <th data-sort="name">Name <span class="sort-indicator">↕</span></th>
           <th data-sort="aboutYou">About you <span class="sort-indicator">↕</span></th>
@@ -749,6 +750,12 @@
     function numCell(v) {
       return '<td class="center">' + (v == null ? '<span class="yn-na">—</span>' : v) + '</td>';
     }
+    function formatDuration(s) {
+      if (s == null) return '<span class="yn-na">—</span>';
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return m > 0 ? (m + 'm ' + r + 's') : (r + 's');
+    }
 
     function renderPrescreeningRows() {
       const sorted = [...preRows].sort((a, b) => {
@@ -767,7 +774,7 @@
       preBodyEl.innerHTML = '';
       if (sorted.length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="22" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No screening responses yet. Make a screening call above.</td>';
+        tr.innerHTML = '<td colspan="23" style="text-align:center;color:#6b7280;padding:1.5rem 0;">No screening responses yet. Make a screening call above.</td>';
         preBodyEl.appendChild(tr);
         return;
       }
@@ -783,8 +790,12 @@
         const date = r.createdAt ? new Date(r.createdAt).toLocaleString(undefined, {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
         const aboutShort = (r.aboutYou || '').slice(0, 200);
 
+        const durCell = r.durationSeconds != null && r.durationSeconds < 60
+          ? '<td class="center" style="color:#991b1b;font-weight:600;" title="Short call — likely ended prematurely.">' + formatDuration(r.durationSeconds) + '</td>'
+          : '<td class="center">' + formatDuration(r.durationSeconds) + '</td>';
         tr.innerHTML =
           '<td>' + date + '</td>' +
+          durCell +
           '<td>' + (r.phoneNumber || '') + '</td>' +
           '<td>' + (r.name || '') + '</td>' +
           '<td class="about">' + (aboutShort ? '"' + aboutShort.replace(/"/g, '&quot;') + (r.aboutYou && r.aboutYou.length > 200 ? '…"' : '"') : '') + '</td>' +
@@ -975,13 +986,14 @@
       try {
         const XLSX = await ensureXlsx();
         const header = [
-          'Date','Phone','Name','About you',
+          'Date','Duration (s)','Phone','Name','About you',
           'English (Q2)','Robot+Recorded (Q3)','WhatsApp photos (Q4)','Main cook (Q5)','Owns EPC (Q6)',
           'EPC uses last week (Q7)','Age (Q8)','TV (Q9)','Fridge (Q10)','Car (Q11)','Piped water (Q12)',
           'PPI score','Needs follow-up','Follow-up details','Disqualified','Force active','Interview-called','Analyst notes','Vapi call ID','Participant ID'
         ];
         const body = preRows.map(r => [
-          r.createdAt || '', r.phoneNumber || '', r.name || '', r.aboutYou || '',
+          r.createdAt || '', r.durationSeconds == null ? '' : r.durationSeconds,
+          r.phoneNumber || '', r.name || '', r.aboutYou || '',
           r.englishInterviewOk, r.robotRecordedOk, r.whatsappPhotosOk, r.mainCook, r.ownsEpc,
           r.epcUsesLastWeek, r.age, r.ownsTv, r.ownsFridge, r.ownsCar, r.pipedWater,
           r.ppiScore, r.needsFollowup, r.followupNotes || '',
