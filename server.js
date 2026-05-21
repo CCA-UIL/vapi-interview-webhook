@@ -534,9 +534,14 @@ async function handlePrescreeningEndOfCall({ message, call, customerNumber, call
       updated_at: new Date().toISOString()
     };
 
+    // Upsert on vapi_call_id so each screening attempt gets its own row
+    // (one row per call, not per participant — re-screens for the same
+    // phone now appear as separate rows in the dashboard, sorted by
+    // created_at DESC). Idempotent if end-of-call-report fires twice
+    // for the same call.
     const { error } = await supabase
       .from("prescreening_responses")
-      .upsert(row, { onConflict: "participant_id" });
+      .upsert(row, { onConflict: "vapi_call_id" });
     if (error) {
       console.error("Failed to upsert prescreening_responses:", error.message);
     } else {
