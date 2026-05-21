@@ -6,7 +6,13 @@ This document is the handoff context for an AI ethnographic interviewer project.
 
 **Goal:** Build "Imani," a Vapi-based outbound voice AI that conducts ethnographic interviews with Nairobi residents who own Electric Pressure Cookers (EPCs). The research explores cultural, emotional, social, and economic dimensions of EPC adoption.
 
-**Current state (2026-05-14):** Phase 1 is built and the full Session 1 → 2 → 3 chain has been validated end-to-end on short test calls. Imani runs each session against real phone numbers with session-appropriate opening flows, screening only on Session 1, scheduling of the next session at the end of Sessions 1 and 2 (with a defensive server-side intercept for tool selection), and a final farewell with auto-hang-up at the end of Session 3. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays for both `schedule_callback` and `schedule_next_session`. Country localization: the server infers the participant's country from their phone number (via `libphonenumber-js`) and passes it as `COUNTRY` runtime variable; the prompt's `<localization>` block adapts Imani's vocabulary, idiom, register, and cultural framing accordingly. Real-participant pilot with full 45-min calls is the next milestone.
+**Current state (2026-05-21):** Two distinct voice flows are deployed and being iterated:
+- **Imani interview bot** — three ~45-minute sessions (Phases 1-14) with session-appropriate opening flows, identity check (Session 1, when name provided), formal consent statement (toggleable via env var), end-of-session scheduling for the next session, and a final farewell with auto-hang-up at the end of Session 3. Eligibility screening has been **removed** from the main interview — it now happens via a separate screening bot before Session 1 is even scheduled. Callback scheduling works for both short (QStash) and long (Vapi schedulePlan) delays. Country localization adapts vocabulary/idiom/register to the participant's country (inferred from phone via `libphonenumber-js`).
+- **Imani screening bot** — short call (typically 2–3 min) using a separate `prescreening_prompt.xml` on the same Vapi assistant. Bot asks 12 questions; Vapi's `analysisPlan.structuredDataPlan` extracts answers at end-of-call into a typed schema; the result lands in the `prescreening_responses` table for analyst review. Bot also answers participant FAQ questions inline and flags unanswered ones for human follow-up.
+
+A table-based operator dashboard at `/` drives both flows (Interview operator tab + Screening tab), with multi-select bulk delete on the interview side and a sortable/Excel-downloadable response table on the screening side.
+
+Real-participant pilot with full 45-min interview calls is the next milestone for the interview bot.
 
 **The user's preferences (apply throughout):**
 - Direct, ruthlessly honest, no pleasantries
@@ -24,7 +30,7 @@ The interview is structured as three separate ~45-minute calls, scheduled days o
 - **Session 2 — Cooking Technology and Meaning** (Phases 5-9): fuel/appliance history, EPC acquisition, EPC integration, community meaning, design feedback
 - **Session 3 — Daily Life, Economics, Full Picture** (Phases 10-14): economics, daily rhythm, mealtime/hospitality, health/transmission, post-meal/close
 
-Each session has phases. Each phase has milestones. Each milestone has an opening probe, optional follow-up probes, and an exit condition. **Phase 1 MVP only runs Session 1**; Sessions 2 and 3 prompt blocks are present but not yet exercised by the server.
+Each session has phases. Each phase has milestones. Each milestone has an opening probe, optional follow-up probes, and an exit condition. Sessions 2 and 3 prompt blocks are present and the server can dial each session distinctly; full real-participant Session 2/3 testing is still pending.
 
 ### Session Detection (Server-Driven, Not Inferred)
 
@@ -71,7 +77,12 @@ Unstrengthened: 1.1, 1.2, 2.1-2.4, 3.1-3.3, 4.3, 5.1-5.2, 6.1, 7.2, 8.2, 9.2-9.3
 - `<voice_and_manner>` — TTS-aware rules: no emojis, no markdown, no narration of internal reasoning
 - `<appliance_disambiguation_principle>` — for every cooking appliance the participant names, resolve both technology and fuel/power source
 - `<pre_probe_checklist>` — five checks Imani runs before every probe (Redundancy, Attribution, Category-listing, Deflection, Ambiguity)
-- `<screening_logic>` — embeds `{{SCREENING_QUESTIONS_JSON}}` inline in the prompt body so the model sees the actual JSON questions verbatim, not just the variable name. Includes a transition sentence requirement before the first question.
+- `<step_0_identity_check>` (Session 1 only, stripped when no name provided) — name verification before the introduction; routes to `report_wrong_number` or `schedule_first_attempt` when the participant isn't on the line.
+- `<consent_branch_enabled>` / `<consent_branch_disabled>` — paired blocks at every consent injection point. Server strips the inactive one based on the `CONSENT_STATEMENT_ENABLED` env var. Active branch reads a formal multi-paragraph consent statement and waits for explicit yes/no.
+- `<vague_time_handling>` — vague-phrase→concrete-time mapping (e.g., "tomorrow" → "tomorrow at this same time"). Applies before any scheduling tool invocation.
+- `<next_session_scheduling>` — governs the read-back-and-confirm pattern at end-of-Sessions-1/2 before `schedule_next_session` fires.
+- `<session_2_3_availability_branch>` — shared "is now still a good time?" handling for Sessions 2 and 3 openings; routes to `schedule_callback` on reschedule.
+- `<screening_logic>` — **emptied placeholder.** Eligibility screening moved to the dedicated screening bot. Kept the tag as a no-op so existing strip-block calls don't error.
 
 ## Repository Layout
 
@@ -80,19 +91,22 @@ vapi-interview-webhook/
 ├── server.js                         # Production server, deployed to Render. Express + Supabase + QStash.
 ├── package.json, package-lock.json
 ├── render.yaml                       # Render service config
+├── public/
+│   └── index.html                    # Operator dashboard (two tabs: Interview operator + Screening). Vanilla HTML/JS, no build step. SheetJS lazy-loaded from CDN for Excel export.
 ├── ARCHITECTURE.md                   # Mermaid component + sequence diagrams
 ├── DEPLOYMENT.md                     # Render env vars, Vapi config, test plan, curl examples
 ├── .env / .env.example               # Local-runtime env, mirrors Render env
 ├── scripts/
-│   ├── start-call.ps1 / .sh          # Trigger a call: `.\scripts\start-call.ps1 +1NUM Name`
+│   ├── start-call.ps1 / .sh          # Trigger an interview call from CLI (mostly superseded by the operator UI)
 │   ├── inspect-db.ps1 / .sh          # Read Supabase tables
-│   └── update-assistant.ps1          # Push a local prompt file to the Vapi assistant (rarely needed now —
-│                                     # server reads prompt per-call from disk)
+│   └── update-assistant.ps1          # Push a local prompt file to the Vapi assistant (rarely needed —
+│                                     # server reads prompts per-call from disk)
 └── eric_project/
     ├── CLAUDE.md                     # This file
     ├── README.md
     ├── prompts/
-    │   ├── Imani_system_prompt_phase1.xml         # PRODUCTION PROMPT, source of truth, ~158KB
+    │   ├── Imani_system_prompt_phase1.xml         # INTERVIEW PROMPT (source of truth for sessions 1/2/3)
+    │   ├── prescreening_prompt.xml                # SCREENING PROMPT (12-question bot)
     │   ├── Eric_Interview_Orchestrator_28Apr26.xml  # Legacy orchestrator, reference only
     │   ├── Vapi_system_prompt_milestone.txt      # Original milestone prompt, reference only
     │   ├── session_1_and_2_summaries_reference.txt  # Reference summaries for Session 3 testing
@@ -100,26 +114,41 @@ vapi-interview-webhook/
     ├── server/
     │   └── server_28Apr2026.js       # Legacy server, reference only
     ├── sim_prompts/
-    │   ├── SIM_revised.txt           # Standard SIM (solo mother of three, charcoal→EPC)
-    │   ├── SIM_resistant.txt         # Harder SIM for stress testing
-    │   ├── SIM_mombasa.txt           # Alternative persona
-    │   └── SIM_session_3.txt         # Session 3-aware SIM
+    │   └── ...                       # Standard / resistant / mombasa / Session 3 SIM personas
     ├── reference/
     │   └── Cooking_in_Nairobi_interview_guide.docx
     └── vapi_config/
-        └── schedule_callback.json    # Snapshot of the Vapi-side tool config (source of truth backup)
+        ├── schedule_callback.json
+        ├── schedule_next_session.json
+        ├── schedule_first_attempt.json
+        ├── report_wrong_number.json
+        ├── prescreening_complete.json
+        └── assistant_notes.md        # User-maintained notes on Vapi assistant settings (voices, transcribers, etc.)
 ```
 
 ## Phase 1: Built — state of the system
 
 ### What's deployed
 
-- `POST /start-call` — body `{customerNumber, name?, sessionNumber?=1, priorSessionsContext?, assistantId?}`. Upserts participant + session in Supabase, posts to Vapi `/call` with `assistantOverrides.model.messages` (the per-call assembled prompt) and runtime `variableValues`.
-- `POST /vapi` — webhook. Handles `status-update` (start = schedule the three-stage close-out timers, end = clean up + mark session completed), `speech-update` (fires queued wrap-up say after participant-stop), `tool-calls` (`schedule_callback` and `schedule_next_session`, with server-side intercept for wrap-up-phase misroutes), `end-of-call-report` (persist transcript, fallback callback parsing).
-- `POST /timing/wrap-up` — QStash trigger at T - `WRAPUP_OFFSET_MINUTES`. **Queues** the wrap-up text in `pendingWrapUpByCallId` and marks the call in `inWrapUpPhaseForCallId`. Does NOT speak yet — that happens in the speech-update handler when the participant's next turn ends.
-- `POST /timing/force-close` — QStash trigger ~30s before hard cap. Force-speaks the closing line via Vapi `{type:"say"}`, `endCallAfterSpoken:true` auto-hangs up. Skips silently if call already ended.
-- `POST /timing/hard-cap` — final fail-safe at INTERVIEW_MAX_MINUTES. Ends Vapi call via controlUrl `{type:"end-call"}`. Skips silently if call already ended.
-- `POST /timing/fire-callback` — QStash trigger for short-fuse callbacks. Dials Vapi immediately with the appropriate prompt (controlled by `isCallback` in body). Used by both `schedule_callback` (same-session retry, any session 1/2/3) and `schedule_next_session` (short Session 2/3 dial).
+**Interview endpoints:**
+- `POST /start-call` — body `{customerNumber, name?, sessionNumber?=1, priorSessionsContext?, scheduledAtLocal?, assistantId?}`. Upserts participant + session, optionally schedules for the future (interpreting `scheduledAtLocal` in the participant's local timezone) or dials immediately. Inserts a `scheduled_calls` row for every call (immediate or scheduled), snapshotting the submitted name as `name_at_call`.
+- `GET /scheduled-calls` — interview dashboard data. Returns recent (last 7 days) + future scheduled-calls rows, joined with participant info. Reconciles `status='sent'` rows whose Vapi call has ended (maps `endedReason` → outcome). Returns the per-row Name snapshot.
+- `DELETE /scheduled-calls/:id` — cancel a scheduled interview (best-effort Vapi delete + Supabase soft-cancel).
+
+**Screening endpoints:**
+- `POST /start-prescreening` — body `{customerNumber, name?, scheduledAtLocal?}`. Dials Vapi with the screening prompt and `assistantOverrides.analysisPlan.structuredDataPlan` (12-field schema). Sets `variableValues.CALL_KIND="prescreening"` so callbacks during the screening flow stay in the screening prompt.
+- `GET /prescreening-responses` — screening dashboard data. Returns rows joined with participants and an `interviewCalled` derived flag (true if any non-cancelled `scheduled_calls` row exists for the participant).
+- `PATCH /prescreening-responses/:id` — analyst-controlled flags: `disqualified`, `force_active`, `analyst_notes`.
+- `DELETE /prescreening-responses/:id` — hard-delete the screening row (participant record preserved).
+
+**Webhook:**
+- `POST /vapi` — handles `status-update` (skip close-out timers for prescreening calls), `speech-update` (queued wrap-up trigger for interviews), `tool-calls` (all tools), `end-of-call-report` (interview: persist transcript + map endedReason to status; screening: extract `analysis.structuredData` and upsert into `prescreening_responses`).
+
+**QStash-driven timers (interview only):**
+- `POST /timing/wrap-up` — QStash trigger at T - `WRAPUP_OFFSET_MINUTES`. Queues the wrap-up text in `pendingWrapUpByCallId` and marks the call in `inWrapUpPhaseForCallId`. The speech-update handler force-speaks the queued text when the participant next stops talking.
+- `POST /timing/force-close` — fail-safe ~30s before hard cap. Force-speaks the closing line and auto-hangs up.
+- `POST /timing/hard-cap` — final fail-safe at `INTERVIEW_MAX_MINUTES`. Ends Vapi call via controlUrl.
+- `POST /timing/fire-callback` — short-fuse callback firing. Honors `CALL_KIND` in body so the rescheduled call uses the right prompt (interview vs screening).
 
 ### Prompt structure
 
@@ -152,9 +181,9 @@ Configured in `server.js`'s status-update handler. Times relative to call start:
 **Branching on session:**
 
 - **Sessions 1 and 2**: soft text is *"Well, that wraps up our interview for today. Thank you so much for everything you've shared. Before we go, I'd like to schedule our next conversation. Would three days from now at this same time work for you?"* — `endCallAfterSpoken:false` (conversation continues so the participant can answer and Imani can invoke `schedule_next_session`).
-- **Session 3 (final)**: soft text is *"Well, that wraps up our final interview session. Thank you so much for everything you've shared across our conversations. Take care."* — `endCallAfterSpoken:true` (Vapi auto-hangs up; no scheduling step).
+- **Session 3 (final)**: soft text is *"Well, that wraps up our final interview session. Thank you so much for everything you've shared across our conversations. Take care. Goodbye."* — `endCallAfterSpoken:true` (Vapi auto-hangs up; no scheduling step). The appended "Goodbye." buffers TTS clipping that was rendering "Take care." as garbled audio.
 
-The server reads `ACTIVE_SESSION` from variableValues to branch.
+The server reads `ACTIVE_SESSION` from variableValues to branch. **Skipped entirely for screening calls** — the status-update handler checks `variableValues.CALL_KIND` and short-circuits before scheduling any timer when the call is `prescreening`. Screening calls close out via the `prescreening_complete` tool instead.
 
 ### Callback / next-session scheduling — short-fuse vs long-fuse
 
@@ -206,8 +235,43 @@ CREATE TABLE scheduled_calls (
   session_number INT NOT NULL CHECK (session_number IN (1, 2, 3)),
   scheduled_at TIMESTAMPTZ NOT NULL,
   vapi_call_id TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
+  status TEXT NOT NULL DEFAULT 'pending', -- 'sent' | 'cancelled' | <per-attempt outcome like 'completed' / 'no_answer' / 'wrong_number' / 'rescheduled_unreached' / etc.>
+  name_at_call TEXT,                       -- snapshot of the name as submitted at call time
   created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE prescreening_responses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  participant_id UUID REFERENCES participants(id) NOT NULL UNIQUE, -- UNIQUE so re-screens overwrite via UPSERT
+  vapi_call_id TEXT,
+  name_at_call TEXT,
+  duration_seconds INTEGER,
+  -- Q1
+  about_you_text TEXT,
+  -- Q2-Q6
+  english_interview_ok BOOLEAN,
+  robot_recorded_ok BOOLEAN,
+  whatsapp_photos_ok BOOLEAN,
+  main_cook BOOLEAN,
+  owns_epc BOOLEAN,
+  -- Q7-Q8
+  epc_uses_last_week INTEGER,
+  age INTEGER,
+  -- Q9-Q12 (PPI assets)
+  owns_tv BOOLEAN,
+  owns_fridge BOOLEAN,
+  owns_car BOOLEAN,
+  piped_water BOOLEAN,
+  -- Derived + meta
+  ppi_score INTEGER,            -- 0-4 asset count (placeholder for a real PPI scorecard)
+  needs_followup BOOLEAN DEFAULT FALSE,
+  followup_notes TEXT,
+  raw_extraction JSONB,         -- full LLM output kept verbatim
+  disqualified BOOLEAN DEFAULT FALSE,
+  force_active BOOLEAN DEFAULT FALSE,
+  analyst_notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
@@ -228,8 +292,9 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 | `WRAPUP_OFFSET_MINUTES` | 2 in production |
 | `FORCE_CLOSE_OFFSET_SECONDS` | 30 (default) |
 | `QSTASH_CALLBACK_THRESHOLD_MINUTES` | 10 (default) |
-| `SCREENING_QUESTIONS_JSON` | JSON array of `{id, question, pass_answer}` |
-| `CONSENT_STATEMENT_ENABLED` | `"true"` (default) or `"false"`. When `"true"`, Imani reads the formal consent statement and waits for an explicit yes/no before screening. When `"false"`, screening starts immediately after the availability check. Read fresh per call (no restart needed). |
+| `SCREENING_QUESTIONS_JSON` | **Deprecated.** Was used by the old in-interview `<screening_logic>` block, which has been removed. Safe to leave set; nothing reads it anymore. |
+| `CONSENT_STATEMENT_ENABLED` | `"true"` (default) or `"false"`. When `"true"`, Imani reads the formal consent statement and waits for explicit yes/no before the interview begins. When `"false"`, the interview begins immediately after the availability check. Read fresh per call (no restart needed). |
+| `START_CALL_API_KEY` | Required for `/start-call`, `/start-prescreening`, and all dashboard endpoints. Sent as `X-API-Key` header. If unset, endpoints are open (development only — startup warning logs this). |
 | `SUPABASE_URL` | Supabase project URL (no `/rest/v1` suffix) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role JWT (server-side only, bypasses RLS) |
 
@@ -242,7 +307,9 @@ RLS is enabled on all three tables with no policies (server uses service-role ke
 - `startSpeakingPlan.waitSeconds: 0.3`, `stopSpeakingPlan.numWords: 3, voiceSeconds: 0.3`
 - `endCallFunctionEnabled: true`
 - `serverMessages: ["function-call", "tool-calls", "status-update", "hang", "end-of-call-report", "speech-update"]`. `speech-update` is required for the wrap-up flow to detect participant-stop events.
-- `model.toolIds`: `schedule_callback` (`1349e77b-...`), `schedule_next_session` (`93497b3c-...`), `report_wrong_number` (`528b1b63-...`), `schedule_first_attempt` (`a9aa8752-...`)
+- `model.toolIds`: `schedule_callback` (`1349e77b-...`), `schedule_next_session` (`93497b3c-...`), `report_wrong_number` (`528b1b63-...`), `schedule_first_attempt` (`a9aa8752-...`), `prescreening_complete` (`b84c81f5-...`). The screening prompt only uses `prescreening_complete`, `schedule_callback` (for "call me back later" during screening), `schedule_first_attempt`, and `report_wrong_number`. The interview prompt only uses `schedule_callback`, `schedule_next_session`, `schedule_first_attempt`, and `report_wrong_number`.
+- `firstMessageInterruptionsEnabled: true` — participant can interrupt the intro (don't-restart-on-interrupt rule is in the prompt).
+- For screening calls, `/start-prescreening` passes a per-call `assistantOverrides.analysisPlan.structuredDataPlan` (12-field JSON schema + `needs_followup` boolean + `followup_notes` string). Vapi runs an extraction LLM at end-of-call and delivers the result to the webhook in `message.analysis.structuredData`.
 
 ### `schedule_callback` tool (reusable, Vapi org-level)
 
@@ -250,7 +317,7 @@ Snapshot at `eric_project/vapi_config/schedule_callback.json`. Used when the par
 - Parameters: `suggestedTime` (required), `customerNumber` (optional — server uses call.customer.number; the model's value is ignored).
 - Description explicitly forbids using it for next-session scheduling.
 - `messages[0]`: `{type: "request-start", content: ""}` — empty content suppresses the model's filler.
-- `messages[1]`: `{type: "request-complete", content: "Got it. I'll call you {{suggestedTime}}. Take care.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends. Wording is intentionally neutral (no "back") so it sounds correct even when the server intercept redirects this invocation to schedule_next_session.
+- `messages[1]`: `{type: "request-complete", content: "Take care. Goodbye.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends. Short and unambiguous; the appended "Goodbye." buffers TTS clipping that was previously rendering "Take care." as garbled audio. The verbal time read-back happens via the prompt's confirmation flow BEFORE the tool is invoked.
 
 ### `report_wrong_number` tool (reusable, Vapi org-level)
 
@@ -266,13 +333,26 @@ Snapshot at `eric_project/vapi_config/schedule_next_session.json`. Used at the e
 - Parameters: `suggestedTime` (required, must be a concrete time, not a question or placeholder).
 - Description explicitly requires the model to wait for a concrete time from the participant before invoking — addresses the model's tendency to invoke prematurely with a clarifying question as the argument.
 - `messages[0]`: `{type: "request-start", content: ""}` — suppresses filler.
-- `messages[1]`: `{type: "request-complete", content: "Got it. I'll call you {{suggestedTime}} for our next conversation. Take care until then.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends.
+- `messages[1]`: `{type: "request-complete", content: "Take care until then. Goodbye.", endCallAfterSpokenEnabled: true}` — Vapi speaks this verbatim and auto-ends. Verbal read-back of the agreed time happens via the prompt's confirmation flow BEFORE the tool is invoked.
+
+### `prescreening_complete` tool (reusable, Vapi org-level)
+
+Snapshot at `eric_project/vapi_config/prescreening_complete.json`. Used by the screening bot immediately after Q12 is answered. No parameters. `request-complete` content: `"Thank you so much for your time. If you are selected for the interview, we will call you back. Goodbye."` with `endCallAfterSpokenEnabled: true`. The screening prompt explicitly tells the model NOT to call endCall directly — the model just invokes this tool silently, the platform speaks the verbatim three-sentence close and ends the call. **Required server-side handler**: a tool-call branch that returns `{ result: "Closing call." }` so Vapi gets a tool response and proceeds with the request-complete + auto-hangup. Without that handler the model loops, re-invoking the tool until eventually falling back to plain endCall.
 
 ### Per-call prompt assembly
 
-The server reads `eric_project/prompts/Imani_system_prompt_phase1.xml` at call time and **strips opening flow blocks that don't match the active session/IS_CALLBACK combination** before sending the assembled prompt via `assistantOverrides.model.messages`. The model sees only the one opening flow it should use.
+Two distinct prompt paths, both built fresh per call by `buildModelOverride({ isCallback, activeSession, hasName, callKind })`:
 
-`loadPromptForCall({ isCallback, activeSession })` in server.js handles the stripping. Sessions 2 and 3 also strip `screening_logic` (per design — they skip screening). The strip regex is line-anchored (`^<tag>...^</tag>$` with `m` flag) because both flow blocks contain inline prose mentions of other flows' tag names that would otherwise be eaten by lazy matching.
+**Interview path** (`loadPromptForCall`): reads `Imani_system_prompt_phase1.xml` and strips blocks that don't apply to this call:
+- The non-matching opening flow (initial vs callback).
+- `session_2_opening_protocol` / `session_3_opening_protocol` blocks not used by the current session.
+- `screening_logic` for sessions 2 and 3 (Sessions 2/3 always skip screening; the block is also empty now since screening was moved to the screening bot).
+- `step_0_identity_check` when no participant name was provided (otherwise the model leaks a half-formed identity-check sentence).
+- `consent_branch_enabled` vs `consent_branch_disabled` based on the `CONSENT_STATEMENT_ENABLED` env var (multiple instances stripped with `gm` flag).
+
+**Screening path** (`loadPrescreeningPrompt`): reads `prescreening_prompt.xml` and strips `step_0_identity_check` when no name. The screening prompt is much smaller (~9KB vs ~158KB) — no phases/milestones, just identity check + intro + availability + 12 questions + close.
+
+The strip regex is line-anchored (`^<tag>...^</tag>$` with `m` flag) so inline prose mentions of other tag names don't get lazily eaten.
 
 Effect: prompt edits no longer require `update-assistant.ps1`. Commit + push triggers Render redeploy and the next call uses the new prompt. The Vapi-stored prompt is a fallback only.
 
@@ -329,11 +409,17 @@ Recorded so future iterations don't relearn these the hard way.
 - **Tool result text is spoken by Vapi via `request-complete` + `endCallAfterSpoken`**, not by the model.
 - **Server-side intercept** redirects misrouted `schedule_callback` invocations during wrap-up to `schedule_next_session`.
 - **Country localization is server-derived.** The server uses `libphonenumber-js` to parse the participant's phone number, maps the ISO alpha-2 country code to an English country name (lookup table for KE/NG/GH/TZ/UG/ZA/RW/ET/US/GB/CA; ISO code as fallback for unmapped countries), and passes it as the `COUNTRY` runtime variable. The prompt's `<localization>` block uses `{{COUNTRY}}` to adapt Imani's behaviour. No country-specific knowledge packs are baked in for MVP — relies on the model's training-data knowledge of country-specific English.
-- **Operator web dashboard at `/`.** Static HTML in `public/index.html` served by the same Render service. **Two tabs**: Interview operator + Screening. Interview tab: table-based call queue (Phone, Name, Schedule, Scheduled-for, Session, Status, Notes, per-row Call/Delete buttons, multi-select with bulk delete). Screening tab: sortable response table (12 question columns + PPI + Disqualify/Force-active checkboxes + Called indicator + per-row Delete button; row-click sends participant to interview tab; downloadable .xlsx via lazy-loaded SheetJS). Drafts live in browser localStorage (key `eric_draft_rows_v1`) until submitted. All endpoints protected by `X-API-Key` header (env var `START_CALL_API_KEY`); the dashboard prompts for the key once and stores it in localStorage. Scheduled times are interpreted in the participant's local timezone, inferred from the phone number's country code via `parseLocalDatetimeInTimezone` (independent of the host's local timezone — uses Intl.DateTimeFormat.formatToParts).
-- **Screening flow.** `POST /start-prescreening` dials Vapi with the `prescreening_prompt.xml` system prompt and `assistantOverrides.analysisPlan.structuredDataPlan` carrying the 12-field JSON schema. Variable `CALL_KIND=prescreening` flows through to identify the call kind on rescheduled callbacks (prompt selection in `buildModelOverride` routes to `loadPrescreeningPrompt`). The end-of-call-report handler detects `CALL_KIND=prescreening`, reads `analysis.structuredData`, computes a 0-4 asset count as `ppi_score`, and upserts a row into `prescreening_responses` keyed by `participant_id` (UNIQUE — re-screens overwrite). `GET /prescreening-responses`, `PATCH /prescreening-responses/:id`, and `DELETE /prescreening-responses/:id` drive the dashboard tab (disqualified / force_active toggles, per-row hard delete, derived `interviewCalled` flag from `scheduled_calls`). Note: code-level identifiers (file names, endpoint paths, table name, tool name) still use `prescreening`/`pre-screening` for historical reasons; only user-facing labels say "Screening" / "Screening call".
-- **Read-back-and-confirm before scheduling.** Before invoking either `schedule_callback` or `schedule_next_session`, Imani must read the proposed time back to the participant ("So I will call you back tomorrow at 3pm, OK?") and wait for explicit confirmation. Specified in three prompt locations: `<session_1_initial_call_flow>` Step 2 callback sub-flow, `<session_1_callback_flow>` Step 3 reschedule branch (which references the Step 2 sub-flow), and the new top-level `<next_session_scheduling>` block (which governs end-of-session scheduling for Sessions 1 and 2). The block is not stripped by `loadPromptForCall` — it applies to every session. The tool's `request-complete` message remains the final goodbye that's spoken after Vapi receives the tool invocation.
-- **Identity check at Session 1 start.** When `PARTICIPANT_NAME` is non-empty, Imani's first utterance is *"Hello, am I speaking with [full name]?"* — no introduction yet. Branches: (a) confirmed → full intro → consent → screening → interview; (b) not them, right number, person not available → ask better time → `schedule_first_attempt` → rescheduled call gets full intro (IS_CALLBACK=false); (c) not them, wrong number → `report_wrong_number` → call ends, marked as wrong number in Supabase. Third party asking "who are you / why?" gets a one-sentence honest answer about being a robot researcher and the participant having agreed to take part. `PARTICIPANT_NAME` arrives in **title + first + last** form (e.g., "Mr. Emeka Obi") and is used verbatim in greetings throughout the call. Sessions 2 and 3 greet by full name but skip the identity-check (participant already confirmed in Session 1). Operator dashboard input field hints at this format.
+- **Operator web dashboard at `/`.** Static HTML in `public/index.html` served by the same Render service. **Two tabs**: Interview operator + Screening. Interview tab: table-based call queue (Phone, Name, Schedule, Scheduled-for, Session, Status, Notes, per-row Call/Delete buttons, multi-select with bulk delete). Screening tab: sortable response table (Date, Duration, Phone, Name, About-you-quote, 12 question columns, PPI, Follow-up?, Follow-up details, Disqualify, Force show, Called, Actions/Delete). Row-click sends participant to interview tab with phone+name pre-filled. Downloadable .xlsx via lazy-loaded SheetJS. Drafts live in browser localStorage (key `eric_draft_rows_v1`) until submitted. All endpoints protected by `X-API-Key` header (env var `START_CALL_API_KEY`); the dashboard prompts for the key once and stores it in localStorage. Scheduled times are interpreted in the participant's local timezone, inferred from the phone number's country code via `parseLocalDatetimeInTimezone` (independent of the host's local timezone — uses Intl.DateTimeFormat.formatToParts).
+- **Read-back-and-confirm before scheduling.** Before invoking either `schedule_callback` or `schedule_next_session`, Imani must read the proposed time back to the participant ("So I will call you back tomorrow at 3pm, OK?") and wait for explicit confirmation. Specified in three prompt locations: `<session_1_initial_call_flow>` Step 2 callback sub-flow, `<session_1_callback_flow>` Step 3 reschedule branch (which references the Step 2 sub-flow), and the top-level `<next_session_scheduling>` block (which governs end-of-session scheduling for Sessions 1 and 2). The block is not stripped by `loadPromptForCall` — it applies to every session. The tool's `request-complete` message remains the final goodbye that's spoken after Vapi receives the tool invocation.
 - **New `sessions.status` values.** In addition to `scheduled`, `in_progress`, `completed`: `wrong_number` (set by `report_wrong_number` tool), `rescheduled_unreached` (set by `schedule_first_attempt` tool — the participant has not yet been reached), and end-of-call-report-derived values from Vapi's `endedReason`: `no_answer`, `voicemail`, `invalid_number`, `no_engagement` (silence-timed-out), `completed_at_cap`, `busy`. `mapEndedReasonToStatus` does the mapping; `statusToNotesLabel` renders the dashboard Notes column. Tool-set terminal statuses (`wrong_number`, `rescheduled_unreached`) are not overwritten by the end-of-call-report handler.
+- **Per-attempt outcome tracking on `scheduled_calls.status`.** When the same participant has multiple interview attempts at the same session_number, the shared `sessions` row only reflects the latest call. To preserve per-attempt history for the dashboard, the end-of-call-report handler also writes the outcome onto `scheduled_calls.status` keyed by `vapi_call_id`. The dashboard's `GET /scheduled-calls` reads from there (not from sessions). Reconciliation pass on the dashboard endpoint backfills old rows with `status='sent'` by checking the Vapi call's current state.
+- **Per-call name snapshot.** `scheduled_calls.name_at_call` and `prescreening_responses.name_at_call` capture the name as submitted for THIS specific call. The dashboards render those snapshots rather than the shared `participants.name`. This way, leaving the name blank for one call does not retroactively blank out earlier rows for the same phone, and the bot uses the SUBMITTED name (blank or not) — not whatever's stored on participants.
+- **Screening flow.** Separate prompt (`prescreening_prompt.xml`) and database table (`prescreening_responses`). `POST /start-prescreening` dials Vapi with the screening prompt + a per-call `analysisPlan.structuredDataPlan` (14-field JSON schema: 12 Qs + needs_followup + followup_notes). `variableValues.CALL_KIND="prescreening"` flows through to identify the call kind on rescheduled callbacks (prompt selection in `buildModelOverride` routes to `loadPrescreeningPrompt`). The end-of-call-report handler detects `CALL_KIND=prescreening`, reads `analysis.structuredData`, computes a 0-4 asset count as `ppi_score`, and upserts a row keyed by `participant_id` (UNIQUE — re-screens overwrite). `GET /prescreening-responses`, `PATCH /prescreening-responses/:id`, and `DELETE /prescreening-responses/:id` drive the dashboard tab. Note: code-level identifiers (file names, endpoint paths, table name, tool names like `prescreening_complete`) still use `prescreening` / `pre-screening` for historical reasons; only user-facing labels say "Screening" / "Screening call".
+- **Screening removed from main interview.** The old in-prompt `<screening_logic>` block has been emptied to a placeholder. Eligibility screening now happens via the dedicated screening bot before Session 1 is even scheduled. The `SCREENING_QUESTIONS_JSON` env var is deprecated (nothing reads it).
+- **Screening bot answers participant FAQs and flags follow-up needs.** A `<participant_questions>` block in `prescreening_prompt.xml` carries verbatim answers for anticipated questions (why photos, why a robot, who selected me, data privacy, duration, can-I-stop). For payment or any off-FAQ question, the bot punts with `"That's a great question — someone from the team will follow up with you on that."` The extraction LLM at end-of-call sets `needs_followup` (bool) and `followup_notes` (short summary). Dashboard surfaces those as a Follow-up? column (amber highlight when set) so the analyst knows to reach out.
+- **Identity check at Session 1 start.** When `PARTICIPANT_NAME` is non-empty, Imani's first utterance is *"Hello, am I speaking with [full name]?"* — no introduction yet. Branches: (a) confirmed → full intro → consent → interview; (b) not them, right number, person not available → ask better time → `schedule_first_attempt` → rescheduled call gets full intro (IS_CALLBACK=false); (c) not them, wrong number → `report_wrong_number` → call ends, marked as wrong number in Supabase. Third party asking "who are you / why?" gets a one-sentence honest answer about being a robot researcher and the participant having agreed to take part. `PARTICIPANT_NAME` arrives in **title + first + last** form (e.g., "Mr. Emeka Obi") and is used verbatim in greetings throughout the call. Sessions 2 and 3 greet by full name but skip the identity-check (participant already confirmed in Session 1). Operator dashboard input field hints at this format.
+- **Recording disclosure in interview consent / screening intro.** The interview consent statement includes "This call will be recorded." The screening intro includes "This call is being recorded for internal research purposes." right before "This will only take a few minutes."
+- **Verbatim closes via tool messages.** All terminal closes (callback, next-session, wrong-number, schedule-first-attempt, screening complete) live in tool `request-complete` messages with `endCallAfterSpokenEnabled: true`, not in model output. The model just invokes the tool silently; Vapi speaks the verbatim text and hangs up. Solves the recurring problem of the model truncating closes ("Goodbye." instead of the full 3-sentence message). **Every tool that uses this pattern needs a server-side webhook handler that returns a tool-call result** — Vapi won't fire the request-complete until it gets one. The `prescreening_complete` tool needed a trivial `return res.json({ results: [{ result: "Closing call." }] })` branch to stop the model from looping.
 
 ## Iteration History — Lessons Learned (Don't Repeat These)
 
@@ -349,6 +435,14 @@ Recorded so future iterations don't relearn these the hard way.
 - **Strengthened milestones produce depth at cost of naturalness when participants are guarded.** Real-participant data still needed to validate.
 - **The 43/45-minute pattern came from rejecting "abrupt hang-up at 45 minutes" in favour of "soft warning then fail-safe." Now staged into three.**
 - **Earlier "Session 2 detection worked" reports were misleading** — appeared to work because of fallback paths in the prompt, not because the summary was actually being read by Imani. Use diagnostic markers to distinguish "appears to work" from "is verifiably working."
+- **`messagesOpenAIFormatted` and `artifact.messages` aggregate consecutive same-role turns.** They look like single mega-utterances even when the call was properly turn-taking. Don't diagnose monologuing from those alone — the visible aggregation is a storage artifact, not the actual model output. Audio is the only reliable source for "did the bot dump everything in one breath."
+- **Vapi tools using `request-complete` need a server-side handler that returns a tool result.** Without it, Vapi waits forever, the model re-invokes, and the model eventually gives up with a plain `endCall`. The handler can be trivial (`return res.json({ results: [{ result: "..." }] })`) but it MUST exist. Discovered when `prescreening_complete` was looping in production.
+- **`scheduleVapiCallback` must not hardcode `IS_CALLBACK` or `activeSession`.** Earlier versions did, silently overriding the intent of `schedule_first_attempt` (which needs `IS_CALLBACK=false` so the rescheduled call gives the full intro). Always read these from the passed-in `variableValues`.
+- **Per-call name SNAPSHOT, not per-participant.** Dashboard rows that join `participants.name` get retroactively rewritten when a later call changes the participant's name. Snapshot at call time (`name_at_call`) so historical rows show what was actually used.
+- **TTS clipping on short final utterances.** "Take care." rendered as garbled audio (transcriber wrote "take a yay" / "take a guess"). The fix is to append a throwaway word like "Goodbye." so the meaningful phrase has audio buffer before the cutoff. Pattern applies to every tool's `request-complete` and the force-close text.
+- **Don't let the prompt instruct "speak the close, then call endCall" — the model reverses the order.** Empirically the model calls endCall first and the prescribed close gets truncated to "Goodbye." Move the close text into a tool's `request-complete` with `endCallAfterSpokenEnabled: true` so Vapi handles speech + hangup atomically.
+- **`firstMessageInterruptionsEnabled: false` makes things worse, not better.** Was tried to stop pickup-greeting interruptions from restarting the intro. Side effect: participant cannot interrupt long monologues. Better fix: re-enable interruptions and use a prompt rule that forbids re-starting the intro on interruption.
+- **Skip the close-out timers for screening calls.** The status-update handler used to schedule three-stage close-out for every call. Screening calls don't need it (the screening bot's own close fires via `prescreening_complete`). Hard-coded `INTERVIEW_MAX_MINUTES=4` would otherwise fire the wrap-up signal mid-screening and trigger spurious "would three days from now work?" scheduling prompts.
 
 ## Phase 2 and Phase 3 Work (Deferred)
 
@@ -366,13 +460,15 @@ Recorded so future iterations don't relearn these the hard way.
 ## Current Open Issues / Punch List
 
 1. **Validate real-participant probing depth on a full 45-min call.** Short test calls (3-min) showed Imani being less probing than in sim. Likely artifact of time pressure + token budget; user has set `maxTokens=250`, `temperature=0.4` to match sim. Pending test result.
-2. **If probing is still thin at 45 min**, the next suspects are the latency tweaks (`startSpeakingPlan.waitSeconds: 0.3`, `transcriber.maxDelay: 500`) — they were lowered for snappier conversation but may be reducing model deliberation time. Consider partial revert toward 0.5-0.8s.
+2. **If probing is still thin at 45 min**, the next suspects are the latency tweaks (`startSpeakingPlan.waitSeconds: 0.2-0.3`, `transcriber.maxDelay: 500`) — they were lowered for snappier conversation but may be reducing model deliberation time. Consider partial revert toward 0.5-0.8s.
 3. **PRIOR_SESSIONS_CONTEXT is always empty.** Sessions 2 and 3 run the right opening protocols but with no actual prior-session content to bridge from. Imani occasionally hallucinates plausible-sounding prior content. Phase 2/3 work to populate this with real summaries.
 4. **Vapi's "No result returned" error** appears in transcripts intermittently. Cause unknown; not prompt-fixable. Investigate Vapi-side.
 5. **Stale QStash messages from prior server runs** occasionally fire and hit the timing handlers with dead callIds. Skipped silently via the in-memory tracking sets. Harmless log noise.
-6. **Screening question priming.** Imani still occasionally improvises eligibility checks beyond `SCREENING_QUESTIONS_JSON` if the role/study_context blocks describe the target population. The role has been sanitized; `study_context` could also be sanitized if needed.
-7. **Transcription accuracy** can drop on quiet/short answers (Deepgram flux-general-en). Has been observed transcribing innocuous answers as "Hang up", causing Imani to obey and end the call early. Worth re-evaluating transcriber config.
-8. **Phase 2 / Phase 3 work** queued.
+6. **Transcription accuracy** can drop on quiet/short answers (Deepgram flux-general-en or Speechmatics default). Has been observed transcribing innocuous answers as "Hang up", causing Imani to obey and end the call early. Worth re-evaluating transcriber config. AssemblyAI and Gladia were tested and dropped speech; Deepgram is most reliable so far.
+7. **Cancellation of future-scheduled screening calls** is not supported from the dashboard. The interview operator tab has a Cancel button; the screening tab does not (cancellation would require either rerouting screening through `scheduled_calls` or adding a separate cancel flow). Use the Vapi dashboard directly if needed.
+8. **`needs_followup` extraction depends on the analysis LLM correctly identifying that the screening bot used the punt phrasing.** False negatives possible — the punt is in the transcript but the LLM might not flag it. If you see a missed flag, send the call ID and the schema description can be tightened.
+9. **PPI score is a 0-4 asset count, not a real PPI scorecard.** A true PPI score would require ~10 country-specific indicators and weights from the Innovations for Poverty Action scorecards. Treat the current number as a rough wealth proxy.
+10. **Phase 2 / Phase 3 work** queued.
 
 ## Testing Approach
 
@@ -383,10 +479,11 @@ For prompt iteration, use the SIM personas in `eric_project/sim_prompts/`. Stand
 4. Manually toggle `<active_session>` value and `<prior_sessions_context>` content for each session
 5. Review transcript
 
-For production code, real call testing via:
-```powershell
-.\scripts\start-call.ps1 +1NUMBER Name
-.\scripts\inspect-db.ps1 sessions   # check the lifecycle
-```
+For production code, real call testing via the operator dashboard at `/`. The CLI scripts (`.\scripts\start-call.ps1 +1NUMBER Name`) still work for interview calls but most operations now go through the UI:
+- **Interview operator tab**: add a row, fill phone/name/schedule, click Call. Watch the Status column to track lifecycle.
+- **Screening tab**: enter phone/name/schedule in the form at the top, click "Screening call". After the call, the response row appears (table auto-refreshes every 15s while the tab is active).
+- For ad-hoc DB inspection: `.\scripts\inspect-db.ps1 sessions` or `scheduled_calls` or `prescreening_responses`.
 
-For staged short-cycle testing of timing: set `INTERVIEW_MAX_MINUTES=3, WRAPUP_OFFSET_MINUTES=1, FORCE_CLOSE_OFFSET_SECONDS=30` on Render. Whole close-out cycle plays in 3 minutes.
+For staged short-cycle testing of interview timing: set `INTERVIEW_MAX_MINUTES=3, WRAPUP_OFFSET_MINUTES=1, FORCE_CLOSE_OFFSET_SECONDS=30` on Render. Whole close-out cycle plays in 3 minutes. **Screening calls ignore these timers entirely** (status-update handler short-circuits when `CALL_KIND=prescreening`), so the short interview cap doesn't truncate a screening test.
+
+To disable the consent statement during interview testing (faster cycles): `CONSENT_STATEMENT_ENABLED=false` on Render. Read fresh per call.
