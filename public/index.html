@@ -96,15 +96,16 @@
       text-transform: uppercase;
       letter-spacing: 0.03em;
     }
-    table.calls col.col-select   { width: 3%;  }
-    table.calls col.col-phone    { width: 12%; }
-    table.calls col.col-name     { width: 13%; }
-    table.calls col.col-schedule { width: 15%; }
-    table.calls col.col-when     { width: 13%; }
-    table.calls col.col-session  { width: 6%;  }
-    table.calls col.col-status   { width: 9%;  }
-    table.calls col.col-notes    { width: 14%; }
-    table.calls col.col-actions  { width: 15%; }
+    table.calls col.col-select    { width: 3%;  }
+    table.calls col.col-phone     { width: 11%; }
+    table.calls col.col-name      { width: 12%; }
+    table.calls col.col-schedule  { width: 14%; }
+    table.calls col.col-when      { width: 12%; }
+    table.calls col.col-duration  { width: 7%;  }
+    table.calls col.col-session   { width: 5%;  }
+    table.calls col.col-status    { width: 9%;  }
+    table.calls col.col-notes     { width: 13%; }
+    table.calls col.col-actions   { width: 14%; }
     table.calls td.select, table.calls th.select { text-align: center; }
     table.calls input[type="checkbox"] { cursor: pointer; }
     tr.selected td { background: #eff6ff; }
@@ -248,6 +249,7 @@
       <col class="col-name">
       <col class="col-schedule">
       <col class="col-when">
+      <col class="col-duration">
       <col class="col-session">
       <col class="col-status">
       <col class="col-notes">
@@ -260,6 +262,7 @@
         <th>Name</th>
         <th>Schedule <span style="font-weight:400;color:#6b7280;">(blank = now)</span></th>
         <th>Scheduled for</th>
+        <th title="Length of the actual call. Short values (under 30s) usually indicate the call ended prematurely.">Duration</th>
         <th>Session</th>
         <th>Status</th>
         <th>Notes</th>
@@ -409,6 +412,7 @@
         <td><input type="text" class="f-name" placeholder="Mr. Emeka Obi" value="${d.name || ''}"></td>
         <td><input type="datetime-local" class="f-schedule" value="${d.scheduledAtLocal || ''}"></td>
         <td class="read-only"></td>
+        <td class="read-only"></td>
         <td class="read-only">1</td>
         <td class="read-only">${badgeFor('draft')}</td>
         <td class="notes"></td>
@@ -434,12 +438,20 @@
       tr.dataset.kind = 'server';
       tr.dataset.id = r.scheduledCallId;
       if (r.completed) tr.classList.add('completed-row');
+      const durSeconds = r.durationSeconds;
+      const durText = durSeconds == null
+        ? ''
+        : (() => { const m = Math.floor(durSeconds/60); const s = durSeconds%60; return m > 0 ? (m + 'm ' + s + 's') : (s + 's'); })();
+      const durCell = durSeconds != null && durSeconds < 30
+        ? `<td class="read-only" style="color:#991b1b;font-weight:600;" title="Short call — likely ended prematurely.">${durText}</td>`
+        : `<td class="read-only">${durText}</td>`;
       tr.innerHTML = `
         <td class="select"><input type="checkbox" class="row-select"></td>
         <td class="read-only">${r.phoneNumber || ''}</td>
         <td class="read-only">${r.name || ''}</td>
         <td class="read-only"></td>
         <td class="read-only">${formatWhen(r.scheduledAt)}</td>
+        ${durCell}
         <td class="read-only">${r.sessionNumber || ''}</td>
         <td class="read-only">${badgeFor(r.callStatus)}</td>
         <td class="notes">${r.notes || ''}</td>
@@ -461,7 +473,7 @@
       (serverRows || []).forEach(r => tbody.appendChild(renderServerRow(r)));
       if (drafts.length === 0 && (serverRows || []).length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td colspan="9" style="text-align:center;color:#6b7280;padding:1.5rem 0;">
+        tr.innerHTML = `<td colspan="10" style="text-align:center;color:#6b7280;padding:1.5rem 0;">
           No rows yet. Click "+ Add row" to start.
         </td>`;
         tbody.appendChild(tr);

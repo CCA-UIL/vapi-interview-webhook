@@ -1232,7 +1232,7 @@ app.get("/scheduled-calls", async (req, res) => {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const { data: scheduled, error: schedErr } = await supabase
       .from("scheduled_calls")
-      .select("id, scheduled_at, session_number, vapi_call_id, participant_id, status, created_at, name_at_call")
+      .select("id, scheduled_at, session_number, vapi_call_id, participant_id, status, created_at, name_at_call, duration_seconds")
       .gt("scheduled_at", sevenDaysAgo)
       .neq("status", "cancelled")
       .order("scheduled_at", { ascending: true });
@@ -1317,7 +1317,8 @@ app.get("/scheduled-calls", async (req, res) => {
         vapiCallId: s.vapi_call_id,
         callStatus,
         notes: statusToNotesLabel(callStatus),
-        completed: ["completed", "completed_at_cap"].includes(callStatus)
+        completed: ["completed", "completed_at_cap"].includes(callStatus),
+        durationSeconds: s.duration_seconds
       };
     });
 
@@ -2129,7 +2130,22 @@ app.post("/vapi", async (req, res) => {
         // attempt has its own scheduled_calls row keyed by vapi_call_id;
         // joining sessions by (participant, session_number) would lose
         // older attempts when newer ones overwrite the sessions row.
-        await updateScheduledCallStatusByVapiId(callId, finalStatus);
+        // Compute duration from start/end timestamps too so the dashboard
+        // can flag short / prematurely-ended calls.
+        const ivStartedAt = call?.startedAt || message?.call?.startedAt;
+        const ivEndedAt   = call?.endedAt   || message?.call?.endedAt;
+        let ivDurationSeconds = null;
+        if (ivStartedAt && ivEndedAt) {
+          const ms = new Date(ivEndedAt).getTime() - new Date(ivStartedAt).getTime();
+          if (!isNaN(ms) && ms > 0) ivDurationSeconds = Math.round(ms / 1000);
+        }
+        const updates = { status: finalStatus };
+        if (ivDurationSeconds != null) updates.duration_seconds = ivDurationSeconds;
+        const { error: scUpdErr } = await supabase
+          .from("scheduled_calls")
+          .update(updates)
+          .eq("vapi_call_id", callId);
+        if (scUpdErr) console.warn("scheduled_calls update failed:", scUpdErr.message);
       }
 
       if (customerNumber) {
