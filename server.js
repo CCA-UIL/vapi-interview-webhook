@@ -1249,8 +1249,9 @@ app.get("/scheduled-calls", async (req, res) => {
     const verifications = await Promise.all((scheduled || []).map(async (s) => {
       if (!s.vapi_call_id) return { row: s, live: true };
       const isFuture = new Date(s.scheduled_at).getTime() > nowMs;
-      const needsReconcile = isFuture || s.status === "sent";
-      if (!needsReconcile) return { row: s, live: true };
+      const needsStatusReconcile = isFuture || s.status === "sent";
+      const needsDurationBackfill = !isFuture && s.duration_seconds == null;
+      if (!needsStatusReconcile && !needsDurationBackfill) return { row: s, live: true };
       try {
         const resp = await fetch(`https://api.vapi.ai/call/${s.vapi_call_id}`, {
           headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
@@ -1259,12 +1260,22 @@ app.get("/scheduled-calls", async (req, res) => {
         if (!resp.ok) return { row: s, live: true };
         const call = await resp.json();
         if (call.status === "scheduled") return { row: s, live: true };
-        if (call.status === "ended" && s.status === "sent") {
-          // Backfill: derive a status from endedReason and persist.
-          const derived = mapEndedReasonToStatus(call.endedReason);
-          return { row: { ...s, status: derived }, live: true, backfillTo: derived };
+
+        // Compute duration from Vapi's startedAt/endedAt if missing.
+        let backfillDur = null;
+        if (needsDurationBackfill && call.startedAt && call.endedAt) {
+          const ms = new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime();
+          if (!isNaN(ms) && ms > 0) backfillDur = Math.round(ms / 1000);
         }
-        // Ended call already reconciled (status != 'sent').
+
+        if (call.status === "ended" && s.status === "sent") {
+          const derived = mapEndedReasonToStatus(call.endedReason);
+          return { row: { ...s, status: derived, duration_seconds: s.duration_seconds ?? backfillDur }, live: true, backfillTo: derived, backfillDur };
+        }
+        // Ended call status already reconciled. Backfill duration only if missing.
+        if (backfillDur != null) {
+          return { row: { ...s, duration_seconds: backfillDur }, live: true, backfillDur };
+        }
         return { row: s, live: true };
       } catch {
         return { row: s, live: true };
@@ -1280,10 +1291,14 @@ app.get("/scheduled-calls", async (req, res) => {
       if (updateErr) console.warn("Failed to mark stale rows cancelled:", updateErr.message);
     }
 
-    const backfills = verifications.filter(v => v.live && v.backfillTo);
-    await Promise.all(backfills.map(v =>
-      supabase.from("scheduled_calls").update({ status: v.backfillTo }).eq("id", v.row.id)
-    ));
+    // Persist any backfills (status and/or duration).
+    const backfills = verifications.filter(v => v.live && (v.backfillTo || v.backfillDur != null));
+    await Promise.all(backfills.map(v => {
+      const upd = {};
+      if (v.backfillTo) upd.status = v.backfillTo;
+      if (v.backfillDur != null) upd.duration_seconds = v.backfillDur;
+      return supabase.from("scheduled_calls").update(upd).eq("id", v.row.id);
+    }));
 
     const liveRows = verifications.filter(v => v.live).map(v => v.row);
 
