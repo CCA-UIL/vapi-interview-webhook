@@ -2665,6 +2665,32 @@ about it.
     strips it from the spoken output automatically while preserving
     it in the model's generation and in the transcript.
 
+    CRITICAL FORMAT RULE — read carefully. The diagnostic tag must
+    be emitted as LITERAL CHARACTERS, not as paraphrased English.
+    Specifically:
+
+    - The tag MUST start with the literal less-than character `<`
+      (U+003C), then the four ASCII letters `EVAL`, then a colon.
+      Not "Eval:", not "EVAL: tested...", not "Evaluation:". The
+      exact 6-character prefix is: `<EVAL:`
+    - The tag MUST end with the literal greater-than character `>`
+      (U+003E). The closing `>` is mandatory on the SAME line as
+      the opening `<`.
+    - The angle brackets are NOT decorative. The TTS pipeline
+      looks for the literal characters `<` and `>` to suppress
+      the tag. If you emit `Eval: tested contradictory, no...`
+      (without angle brackets), the TTS reads it aloud to the
+      participant — destroying the call. This has happened in
+      production.
+    - After the closing `>`, immediately output your spoken
+      response on the next line. If you ONLY emit the diagnostic
+      and no spoken response, the participant hears the diagnostic
+      and nothing else — also destroying the call.
+    - If for any reason you cannot emit the literal `<` and `>`
+      characters, DO NOT emit any diagnostic at all. Emit only
+      the spoken response. Silent classification (no visible tag)
+      is acceptable; paraphrased classification is NOT.
+
     Required format: every classification tag must show the
     precedence ladder explicitly. You must test each category
     above the one you choose, in order, and write whether it
