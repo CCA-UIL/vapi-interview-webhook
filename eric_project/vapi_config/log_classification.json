@@ -1,0 +1,26 @@
+{
+  "type": "function",
+  "async": true,
+  "function": {
+    "name": "log_classification",
+    "description": "Invoke this tool BEFORE every spoken response, on EVERY single turn (interview or screening). The tool is silent — it produces NO audible output to the participant. Its purpose is to log the precedence-walk classification of the participant's last utterance for analyst review and quality auditing. After invoking the tool, immediately produce your spoken response (the next thing in the same turn). Never include classification text in your spoken response itself — that text goes ONLY in the tool arguments, never as speech. The tool runs asynchronously; you do not wait for a result.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "precedence_walk": {
+          "type": "string",
+          "description": "The full precedence-ladder walk in compact form. Show each category tested and whether it matched. Example: \"tested CONTRADICTORY (no), DEFLECTIVE (no), FRAME_SHIFT (no), EMOTIONAL_SIGNAL (no), HIGH_VALUE_THEME (no), EMERGENT_SIGNAL (no), → SUFFICIENT — specific dish: irio\". This visible walk is required (not optional) — testing showed the walk itself improves classification accuracy."
+        },
+        "final_classification": {
+          "type": "string",
+          "enum": ["CONTRADICTORY", "DEFLECTIVE", "FRAME_SHIFT", "TRAUMA_DISCLOSURE", "EMOTIONAL_SIGNAL", "HIGH_VALUE_THEME", "EMERGENT_SIGNAL", "SUFFICIENT", "VAGUE"],
+          "description": "The single final category your precedence walk resolved to."
+        }
+      },
+      "required": ["precedence_walk", "final_classification"]
+    }
+  },
+  "messages": [
+    { "type": "request-start", "content": "" }
+  ]
+}

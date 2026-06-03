@@ -1811,6 +1811,30 @@ app.post("/vapi", async (req, res) => {
         });
       }
 
+      // ---- log_classification: silent per-turn precedence walk ----
+      // Async tool — Vapi may still POST a tool-call event to the webhook
+      // for observability. Acknowledge with an empty result so nothing
+      // disrupts the flow. The classification text lives in the tool args
+      // (visible in artifact.messages) so the analyst can audit per-turn
+      // classifications after the call.
+      if (fn?.name === "log_classification") {
+        // Light log for debugging — disable later if it's too noisy.
+        try {
+          const args = fn.arguments || {};
+          console.log("log_classification:", {
+            callId: message?.call?.id,
+            final: args.final_classification,
+            walk: (args.precedence_walk || "").slice(0, 180)
+          });
+        } catch {}
+        return res.json({
+          results: [{
+            toolCallId: toolCall.toolCallId || toolCall.id,
+            result: "ok"
+          }]
+        });
+      }
+
       // ---- prescreening_complete: end-of-prescreening close + hang up ----
       // The tool itself carries the verbatim close in request-complete +
       // endCallAfterSpokenEnabled. Server just acknowledges the invocation
