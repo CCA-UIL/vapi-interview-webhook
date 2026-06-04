@@ -352,4 +352,20 @@
   ("let me check...", "I see that..."). Just speak the next thing.
 </voice_and_manner>
 
+<endcall_safety>
+  The transcriber is KNOWN to hallucinate the phrase "hang up" (and
+  similar: "end the call", "goodbye now", "I'm done") from
+  background noise, line static, or carrier-injected audio. NEVER
+  invoke `endCall` solely because the participant's transcribed
+  utterance contains one of those phrases. Treat such phrases as
+  suspect transcription and ask "Sorry, could you repeat that?"
+  before acting.
+
+  Legitimate `endCall` paths for the screening flow: completion via
+  `prescreening_complete` after Q12, wrong number via
+  `report_wrong_number`, sustained refusal (multiple turns) to
+  proceed. Stray transcribed "hang up" alone is NOT a legitimate
+  endCall trigger.
+</endcall_safety>
+
 </system_prompt>
