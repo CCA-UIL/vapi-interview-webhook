@@ -815,19 +815,49 @@ async function buildModelOverride({ isCallback, activeSession = 1, hasName = fal
   };
 }
 
+// Per-call firstMessage override. The Vapi assistant's default firstMessage
+// is "Hello! May I please speak with {{PARTICIPANT_NAME}}?" which is correct
+// for the common case (first attempt, name known). Returns undefined when
+// the default applies — caller should omit firstMessage from
+// assistantOverrides so the assistant default is used.
+//
+// Why these branches exist:
+// - !hasName: substituting {{PARTICIPANT_NAME}} into the default would
+//   produce broken speech ("Hello! May I please speak with ?"). We swap in
+//   a name-agnostic greeting that asks the participant to self-identify.
+// - isCallback: per the prompt's session_1_callback_flow, the opening
+//   should be a brief callback acknowledgment ("calling you back as we
+//   arranged"), not a fresh "may I speak with..." which would imply we
+//   don't know whom we just spoke to a few minutes ago.
+function buildFirstMessageOverride({ hasName, isCallback }) {
+  if (isCallback && hasName) {
+    return "Hi {{PARTICIPANT_NAME}}, this is Imani from the Clean Cooking Alliance again — I'm calling you back as we arranged.";
+  }
+  if (isCallback && !hasName) {
+    return "Hi, this is Imani from the Clean Cooking Alliance — I'm calling you back as we arranged.";
+  }
+  if (!hasName) {
+    return "Hello! This is Imani — a robot caller from the Clean Cooking Alliance. May I ask who I'm speaking with?";
+  }
+  return undefined;
+}
+
 async function startVapiCall({ assistantId, customerNumber, variableValues }) {
   const isCallback = variableValues?.IS_CALLBACK === "true";
   const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
   const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
   const callKind = variableValues?.CALL_KIND || "interview";
+  const firstMessage = buildFirstMessageOverride({ hasName, isCallback });
+  const assistantOverrides = {
+    variableValues,
+    model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
+  };
+  if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
     customer: { number: customerNumber },
-    assistantOverrides: {
-      variableValues,
-      model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
-    }
+    assistantOverrides
   });
 }
 
@@ -867,15 +897,18 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
   }
 
   // Long-fuse path: hand off to Vapi's native scheduler.
+  const firstMessage = buildFirstMessageOverride({ hasName, isCallback });
+  const assistantOverrides = {
+    variableValues,
+    model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
+  };
+  if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: PHONE_NUMBER_ID,
     customer: { number: customerNumber },
     schedulePlan: { earliestAt: earliestAtIso },
-    assistantOverrides: {
-      variableValues,
-      model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
-    }
+    assistantOverrides
   });
 }
 
@@ -976,6 +1009,17 @@ function buildVariableValues({ activeSession, priorSessionsContext, isCallback, 
 // =============================================================================
 // Routes
 // =============================================================================
+
+/**
+ * GET /healthz
+ * Lightweight uptime probe. Returns 200 with a tiny JSON body. Intended for
+ * external pingers (UptimeRobot, BetterUptime, GitHub Actions cron, etc.) to
+ * hit every few minutes so Render does not spin the service down to cold.
+ * No auth: must be reachable from anonymous monitors.
+ */
+app.get("/healthz", (req, res) => {
+  res.json({ ok: true, uptimeSeconds: Math.round(process.uptime()) });
+});
 
 /**
  * POST /start-call
@@ -1179,11 +1223,17 @@ app.post("/start-prescreening", async (req, res) => {
       summaryPlan: { enabled: true }
     };
 
+    // Prescreening is always a first-attempt call (never a callback). Empty
+    // name → swap in the name-agnostic greeting so we don't speak the
+    // broken "Hello! May I please speak with ?".
+    const firstMessage = buildFirstMessageOverride({ hasName, isCallback: false });
+    const assistantOverrides = { variableValues, model, analysisPlan };
+    if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
     const baseBody = {
       assistantId: ASSISTANT_ID,
       phoneNumberId: PHONE_NUMBER_ID,
       customer: { number: customerNumber },
-      assistantOverrides: { variableValues, model, analysisPlan }
+      assistantOverrides
     };
     const body = scheduledUtcIso
       ? { ...baseBody, schedulePlan: { earliestAt: scheduledUtcIso } }
@@ -2055,15 +2105,19 @@ app.post("/vapi", async (req, res) => {
             customerNumber, earliestAt: utcTarget.toISOString(), delayMinutes: delayMinutes.toFixed(2)
           });
         } else {
+          const hasName = Boolean(participantName.trim());
+          const firstMessage = buildFirstMessageOverride({ hasName, isCallback: false });
+          const assistantOverrides = {
+            variableValues: nextSessionVars,
+            model: await buildModelOverride({ isCallback: false, activeSession: nextSession })
+          };
+          if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
           scheduled = await vapiPost("/call", {
             assistantId: assistantIdForNext,
             phoneNumberId: PHONE_NUMBER_ID,
             customer: { number: customerNumber },
             schedulePlan: { earliestAt: utcTarget.toISOString() },
-            assistantOverrides: {
-              variableValues: nextSessionVars,
-              model: await buildModelOverride({ isCallback: false, activeSession: nextSession })
-            }
+            assistantOverrides
           });
         }
 
@@ -2311,14 +2365,17 @@ app.post("/timing/fire-callback", async (req, res) => {
     const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
     const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
     const callKind = variableValues?.CALL_KIND || "interview";
+    const firstMessage = buildFirstMessageOverride({ hasName, isCallback });
+    const assistantOverrides = {
+      variableValues,
+      model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
+    };
+    if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
     const result = await vapiPost("/call", {
       assistantId,
       phoneNumberId: PHONE_NUMBER_ID,
       customer: { number: customerNumber },
-      assistantOverrides: {
-        variableValues,
-        model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
-      }
+      assistantOverrides
     });
     console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber, isCallback, activeSession });
     return res.json({ ok: true, vapiCallId: result?.id });
