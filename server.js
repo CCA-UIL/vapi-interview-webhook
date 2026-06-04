@@ -1544,8 +1544,21 @@ app.patch("/prescreening-responses/:id", async (req, res) => {
 
 /**
  * DELETE /scheduled-calls/:id
- * Cancel a scheduled call: delete the Vapi-side schedule (if any),
- * mark the Supabase row as cancelled.
+ * Remove a scheduled-calls row from the operator dashboard.
+ *
+ * Vapi-side behavior depends on whether the call has actually run:
+ * - Call still scheduled (Vapi has no startedAt yet): DELETE it on Vapi.
+ *   For a scheduled-but-not-yet-fired call, Vapi DELETE is the cancel
+ *   mechanism — no artifact exists yet, so nothing is lost.
+ * - Call has started or ended (Vapi has startedAt): SKIP Vapi DELETE.
+ *   The Vapi artifact (transcript, recording, performanceMetrics,
+ *   messages) must be preserved so the operator can still review the
+ *   call from Vapi's dashboard or API after the row is hidden from
+ *   the UI. This was the explicit design correction: prior behavior
+ *   unconditionally DELETE'd and wiped completed-call artifacts.
+ *
+ * Supabase: always mark the row as cancelled so it disappears from
+ * GET /scheduled-calls (which filters cancelled rows out).
  */
 app.delete("/scheduled-calls/:id", async (req, res) => {
   try {
@@ -1566,19 +1579,41 @@ app.delete("/scheduled-calls/:id", async (req, res) => {
     if (fetchErr) throw fetchErr;
     if (!row) return res.status(404).json({ error: "scheduled_calls row not found" });
 
-    // Best-effort Vapi delete (only for future-scheduled rows whose Vapi call
-    // still exists). Past calls will not have a deletable Vapi resource.
     if (row.vapi_call_id) {
       try {
-        const resp = await fetch(`https://api.vapi.ai/call/${row.vapi_call_id}`, {
-          method: "DELETE",
+        // Probe Vapi to decide: cancel (DELETE) vs. preserve (skip).
+        const probe = await fetch(`https://api.vapi.ai/call/${row.vapi_call_id}`, {
           headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
         });
-        if (!resp.ok && resp.status !== 404) {
-          console.warn(`Vapi DELETE for ${row.vapi_call_id} returned ${resp.status}`);
+        if (probe.status === 404) {
+          // Call already gone from Vapi (e.g., previously deleted, or
+          // never persisted). Nothing to do; just hide the row.
+        } else if (probe.ok) {
+          const call = await probe.json();
+          if (call.startedAt) {
+            // Call has run — preserve the artifact. NEVER DELETE.
+            console.log("Preserving Vapi artifact for completed/in-progress call", {
+              vapiCallId: row.vapi_call_id, status: call.status, startedAt: call.startedAt
+            });
+          } else {
+            // Call still scheduled and hasn't fired — DELETE cancels it.
+            const delResp = await fetch(`https://api.vapi.ai/call/${row.vapi_call_id}`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
+            });
+            if (!delResp.ok && delResp.status !== 404) {
+              console.warn(`Vapi DELETE for ${row.vapi_call_id} returned ${delResp.status}`);
+            }
+          }
+        } else {
+          // Probe failed for an unexpected reason. Err on the side of
+          // preservation — do nothing on Vapi rather than risk wiping
+          // an artifact during a transient outage. The Supabase row
+          // is still hidden below.
+          console.warn(`Vapi probe for ${row.vapi_call_id} returned ${probe.status}; skipping Vapi DELETE to preserve any artifact`);
         }
       } catch (e) {
-        console.warn("Vapi DELETE failed (continuing):", e.message);
+        console.warn("Vapi reconciliation failed (continuing with Supabase hide):", e.message);
       }
     }
 

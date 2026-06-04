@@ -665,7 +665,7 @@
     bulkDeleteBtn.addEventListener('click', async () => {
       const rows = getSelectedRows();
       if (rows.length === 0) return;
-      if (!confirm(`Delete ${rows.length} selected row${rows.length === 1 ? '' : 's'}? Future scheduled calls will be cancelled; past rows will be hidden from the dashboard (call logs remain in Supabase).`)) return;
+      if (!confirm(`Delete ${rows.length} selected row${rows.length === 1 ? '' : 's'}? Future scheduled calls will be cancelled; past rows will be hidden from the dashboard (call logs remain in Supabase and in the Vapi dashboard).`)) return;
       const apikey = apikeyEl.value.trim();
       bulkDeleteBtn.disabled = true;
       setStatus('info', `Deleting ${rows.length} row(s)...`);
