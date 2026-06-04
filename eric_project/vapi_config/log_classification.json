@@ -3,7 +3,7 @@
   "async": true,
   "function": {
     "name": "log_classification",
-    "description": "Invoke this tool BEFORE every spoken response, on EVERY single turn (interview or screening). The tool is silent — it produces NO audible output to the participant. Its purpose is to log the precedence-walk classification of the participant's last utterance for analyst review and quality auditing. After invoking the tool, immediately produce your spoken response (the next thing in the same turn). Never include classification text in your spoken response itself — that text goes ONLY in the tool arguments, never as speech. The tool runs asynchronously; you do not wait for a result.",
+    "description": "Invoke this tool BEFORE every spoken response, on every turn that is part of substantive interview content. DO NOT invoke during the pre-interview flow (identity verification, introduction, consent, screening, or the Session 2/3 identity-check turns) — those scripted yes/no exchanges have no classifiable analytic content and logging them only adds latency. Begin invoking from Phase 1 Milestone 1.1 onward (Session 1) and from the equivalent first interview-content milestone in Sessions 2 and 3. The tool is silent — it produces NO audible output to the participant. Its purpose is to log the precedence-walk classification of the participant's last utterance for analyst review and quality auditing. After invoking the tool, immediately produce your spoken response (the next thing in the same turn). Never include classification text in your spoken response itself — that text goes ONLY in the tool arguments, never as speech. The tool runs asynchronously; you do not wait for a result.",
     "parameters": {
       "type": "object",
       "properties": {
