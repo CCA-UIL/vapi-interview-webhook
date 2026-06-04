@@ -758,6 +758,14 @@ function loadPromptForCall({ isCallback, activeSession = 1, hasName = false, con
     stripBlock("session_2_opening_protocol", "this is Session 3, not Session 2");
     stripBlock("screening_logic", "Sessions 2 and 3 skip screening");
   }
+
+  // A/B toggle for the turn-opening acknowledgment. When disabled,
+  // strip the block so the model gets no instruction to emit
+  // "Mm-hmm." / "Right." / etc. before the substantive reply.
+  if (!turnOpeningEnabled()) {
+    stripBlock("turn_opening", "turn-opening acknowledgment disabled via TURN_OPENING_ENABLED=false");
+  }
+
   return prompt;
 }
 
@@ -790,6 +798,18 @@ function consentStatementEnabled() {
   return String(process.env.CONSENT_STATEMENT_ENABLED || "true").toLowerCase() !== "false";
 }
 
+// TURN_OPENING_ENABLED gates the <turn_opening> prompt block (the
+// one- to three-word acknowledgment the model emits at the start of
+// every spoken reply to mask LLM time-to-first-audio). Read fresh per
+// call so we can A/B by toggling the Render env var between dials
+// without a redeploy. Defaults to true (acknowledgment on) when unset.
+// To run a clean A/B: set TURN_OPENING_ENABLED=false, dial Call A,
+// don't delete it; set TURN_OPENING_ENABLED=true (or unset), dial
+// Call B, don't delete it; then compare turn-transition latency.
+function turnOpeningEnabled() {
+  return String(process.env.TURN_OPENING_ENABLED || "true").toLowerCase() !== "false";
+}
+
 // Load the prescreening prompt and strip the step_0 identity-check block
 // when no participant name was provided. Mirrors the per-call stripping
 // pattern used in loadPromptForCall for the interview prompt.
@@ -798,6 +818,12 @@ function loadPrescreeningPrompt({ hasName = false }) {
   if (!hasName) {
     const re = /^\s*<step_0_identity_check>[\s\S]*?^\s*<\/step_0_identity_check>\s*$/m;
     prompt = prompt.replace(re, "<step_0_identity_check>(omitted: no participant name provided)</step_0_identity_check>");
+  }
+  // Mirror the A/B toggle from loadPromptForCall so screening calls
+  // honor the same TURN_OPENING_ENABLED env var.
+  if (!turnOpeningEnabled()) {
+    const re = /^<turn_opening>[\s\S]*?^<\/turn_opening>$/m;
+    prompt = prompt.replace(re, "<turn_opening>(omitted: turn-opening acknowledgment disabled via TURN_OPENING_ENABLED=false)</turn_opening>");
   }
   return prompt;
 }
