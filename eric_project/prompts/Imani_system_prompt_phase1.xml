@@ -2770,8 +2770,10 @@ about it.
 
   <evaluation_rule>
     GATING — when NOT to invoke `log_classification`:
-    Do NOT invoke this tool during the pre-interview flow. That
-    includes:
+    Do NOT invoke this tool during turns that are not substantive
+    interview content. Those are:
+
+    Pre-interview turns:
     - Step 0 identity verification (confirming you've reached the
       right person, title + first + last name match)
     - Step 1 introduction (who you are, why you're calling)
@@ -2782,14 +2784,33 @@ about it.
     - Any screening-style yes/no exchange that precedes substantive
       interview content
 
-    Begin invoking `log_classification` ONLY once substantive
-    interview content begins — i.e., from Phase 1, Milestone 1.1
-    onward in Session 1, and from the equivalent first
-    interview-content milestone in Sessions 2 and 3. Rationale:
-    classification is a quality-audit signal for analyst review of
-    interview content. Opening utterances are scripted yes/no /
-    name-confirmation turns with no precedence-walk value, and
-    logging them adds latency and noise without analytic value.
+    End-of-call turns (the entire closing protocol — see
+    <closing_protocol>):
+    - The open-ended close question ("Is there anything else...")
+      and the participant's response to it
+    - The transition line you deliver in session_1_close /
+      session_2_close Step 2 ("Thank you — this has given me a
+      real picture...")
+    - The scheduling question itself ("Before we go, I'd like to
+      schedule our next conversation. Would three days from now at
+      this same time work for you?") and the participant's
+      response
+    - The read-back-and-confirm exchange ("So I will call you back
+      [time], OK?") and any correction loop
+    - The schedule_next_session tool invocation itself
+    - The Session 3 closing line (no scheduling in Session 3)
+    - Any post-close turns governed by <post_close_behaviour>
+
+    Begin invoking `log_classification` ONLY during substantive
+    interview content — i.e., from Phase 1, Milestone 1.1 onward
+    in Session 1, and from the equivalent first interview-content
+    milestone in Sessions 2 and 3. STOP invoking the moment you
+    enter the closing protocol (Step 1 of session_X_close — the
+    open-ended close question). Rationale: classification is a
+    quality-audit signal for analyst review of interview content.
+    Opening and closing utterances are scripted procedural turns
+    with no precedence-walk value, and logging them adds latency
+    and noise without analytic value.
 
     On every turn FROM THAT POINT ONWARD, before producing your
     spoken response, classify the participant's last utterance by
