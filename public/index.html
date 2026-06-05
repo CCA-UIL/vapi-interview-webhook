@@ -194,6 +194,16 @@
       background: #fee2e2; color: #991b1b;
     }
     table.calls .row-actions button.delete:hover:not(:disabled) { background: #fecaca; }
+    table.calls input.f-test {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85rem;
+    }
+    table.calls input.f-test.test-mode-flagged {
+      background: #fef3c7;
+      border-color: #f59e0b;
+      color: #78350f;
+      font-weight: 600;
+    }
     table.calls .row-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
     .badge {
       display: inline-block;
@@ -248,6 +258,7 @@
       <col class="col-phone">
       <col class="col-name">
       <col class="col-schedule">
+      <col class="col-test">
       <col class="col-when">
       <col class="col-duration">
       <col class="col-session">
@@ -261,6 +272,7 @@
         <th>Phone</th>
         <th>Name</th>
         <th>Schedule <span style="font-weight:400;color:#6b7280;">(blank = now)</span></th>
+        <th title="Test mode: comma-separated milestone IDs to run (e.g. 1.3,2.1). Skips intro, consent, closing, scheduling. Bot opens with 'Test call. Jumping to milestone X.Y.' Leave blank for normal calls.">Test mode <span style="font-weight:400;color:#6b7280;">(e.g. 1.3,2.1)</span></th>
         <th>Scheduled for</th>
         <th title="Length of the actual call. Short values (under 30s) usually indicate the call ended prematurely.">Duration</th>
         <th>Session</th>
@@ -406,11 +418,13 @@
       tr.className = 'draft-row';
       tr.dataset.kind = 'draft';
       tr.dataset.id = d.id;
+      const testFlagged = (d.testMilestones || '').trim() ? 'test-mode-flagged' : '';
       tr.innerHTML = `
         <td class="select"><input type="checkbox" class="row-select"></td>
         <td><input type="tel" class="f-phone" placeholder="+2348037642802" value="${d.phone || ''}"></td>
         <td><input type="text" class="f-name" placeholder="Mr. Emeka Obi" value="${d.name || ''}"></td>
         <td><input type="datetime-local" class="f-schedule" value="${d.scheduledAtLocal || ''}"></td>
+        <td><input type="text" class="f-test ${testFlagged}" placeholder="blank = normal" value="${d.testMilestones || ''}"></td>
         <td class="read-only"></td>
         <td class="read-only"></td>
         <td class="read-only">1</td>
@@ -427,6 +441,11 @@
       tr.querySelector('.f-phone').addEventListener('input', e => updateDraft(d.id, 'phone', e.target.value));
       tr.querySelector('.f-name').addEventListener('input', e => updateDraft(d.id, 'name', e.target.value));
       tr.querySelector('.f-schedule').addEventListener('input', e => updateDraft(d.id, 'scheduledAtLocal', e.target.value));
+      tr.querySelector('.f-test').addEventListener('input', e => {
+        updateDraft(d.id, 'testMilestones', e.target.value);
+        // Live visual: highlight the field whenever it has content.
+        e.target.classList.toggle('test-mode-flagged', e.target.value.trim().length > 0);
+      });
       tr.querySelector('button.call').addEventListener('click', () => submitDraft(tr, d.id));
       tr.querySelector('button.delete').addEventListener('click', () => deleteDraft(d.id));
       tr.querySelector('.row-select').addEventListener('change', onRowSelectChange);
@@ -449,6 +468,7 @@
         <td class="select"><input type="checkbox" class="row-select"></td>
         <td class="read-only">${r.phoneNumber || ''}</td>
         <td class="read-only">${r.name || ''}</td>
+        <td class="read-only"></td>
         <td class="read-only"></td>
         <td class="read-only">${formatWhen(r.scheduledAt)}</td>
         ${durCell}
@@ -496,7 +516,7 @@
     }
     function addDraft() {
       const drafts = loadDrafts();
-      drafts.push({ id: newDraftId(), phone: '', name: '', scheduledAtLocal: '' });
+      drafts.push({ id: newDraftId(), phone: '', name: '', scheduledAtLocal: '', testMilestones: '' });
       saveDrafts(drafts);
       refresh();
     }
@@ -506,6 +526,7 @@
       const phone = tr.querySelector('.f-phone').value.trim();
       const name = tr.querySelector('.f-name').value.trim();
       const scheduledAtLocal = tr.querySelector('.f-schedule').value.trim();
+      const testMilestones = tr.querySelector('.f-test').value.trim();
       const apikey = apikeyEl.value.trim();
       const callBtn = tr.querySelector('button.call');
       const deleteBtn = tr.querySelector('button.delete');
@@ -518,10 +539,22 @@
         setStatus('err', 'Enter the API key in the toolbar first.');
         return;
       }
+      // Validate test-mode format client-side too so we don't surprise the user
+      // with a silent fallback to normal mode.
+      if (testMilestones && testMilestones.toLowerCase() !== 'all') {
+        const ok = /^\s*\d+\.\d+(\s*,\s*\d+\.\d+)*\s*$/.test(testMilestones);
+        if (!ok) {
+          setStatus('err', 'Test mode value must be "all" or comma-separated milestone IDs like "1.3,2.1".');
+          return;
+        }
+        if (!confirm(`TEST MODE: this call will skip intro, consent, and closing, and will run only milestones ${testMilestones}. The bot will open with "Test call. Jumping to milestone ${testMilestones.split(',')[0].trim()}." Proceed?`)) {
+          return;
+        }
+      }
 
       callBtn.disabled = true;
       deleteBtn.disabled = true;
-      setStatus('info', scheduledAtLocal ? `Scheduling call to ${phone}...` : `Dialling ${phone}...`);
+      setStatus('info', scheduledAtLocal ? `Scheduling call to ${phone}...` : `Dialling ${phone}${testMilestones ? ' [TEST MODE]' : ''}...`);
 
       try {
         const resp = await fetch('/start-call', {
@@ -533,7 +566,8 @@
           body: JSON.stringify({
             customerNumber: phone,
             name: name || undefined,
-            scheduledAtLocal: scheduledAtLocal || undefined
+            scheduledAtLocal: scheduledAtLocal || undefined,
+            testMilestones: testMilestones || undefined
           })
         });
         const data = await resp.json();
@@ -939,7 +973,7 @@
 
     function sendToInterviewTab(r) {
       const drafts = loadDrafts();
-      drafts.push({ id: newDraftId(), phone: r.phoneNumber || '', name: r.name || '', scheduledAtLocal: '' });
+      drafts.push({ id: newDraftId(), phone: r.phoneNumber || '', name: r.name || '', scheduledAtLocal: '', testMilestones: '' });
       saveDrafts(drafts);
       switchTab('interview');
       refresh();

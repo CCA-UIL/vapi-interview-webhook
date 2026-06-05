@@ -693,7 +693,7 @@ const PRESCREENING_SCHEMA = {
   required: []
 };
 
-function loadPromptForCall({ isCallback, activeSession = 1, hasName = false, consentEnabled = true }) {
+function loadPromptForCall({ isCallback, activeSession = 1, hasName = false, consentEnabled = true, testMilestones = null }) {
   let prompt = fs.readFileSync(PROMPT_PATH, "utf8");
   // Regex must anchor to top-level tags (column 0). Both flow blocks
   // contain inline prose references to other flows' tag names (e.g.,
@@ -759,6 +759,92 @@ function loadPromptForCall({ isCallback, activeSession = 1, hasName = false, con
     stripBlock("screening_logic", "Sessions 2 and 3 skip screening");
   }
 
+  // Test mode: strip everything that isn't one of the selected milestones,
+  // plus all opening / consent / closing scaffolding, and inject a
+  // <test_mode> instruction block at the top of <system_prompt>. This
+  // path only runs when the operator explicitly passed testMilestones
+  // on /start-call (parseTestMilestones returned a non-null list).
+  if (Array.isArray(testMilestones) && testMilestones.length > 0) {
+    const selected = new Set(testMilestones);
+
+    // Strip all session-opening / consent / closing scaffolding so the
+    // bot has nothing tempting it to greet, consent, or close-and-
+    // schedule. These overlap with the per-session strips above, but
+    // we redo them unconditionally here to cover all activeSession
+    // values cleanly.
+    stripBlock("session_1_initial_call_flow", "stripped by test mode");
+    stripBlock("session_1_callback_flow", "stripped by test mode");
+    stripBlock("session_2_opening_protocol", "stripped by test mode");
+    stripBlock("session_3_opening_protocol", "stripped by test mode");
+    stripBlock("closing_protocol", "stripped by test mode — bot ends with endCall after last selected milestone");
+    stripBlock("next_session_scheduling", "stripped by test mode — no scheduling on test calls");
+    stripNestedBlock("step_0_identity_check", "stripped by test mode");
+
+    // Strip every <milestone name="X.Y ..."> block whose X.Y is not in
+    // the selected list. Replace with a one-line placeholder so the
+    // surrounding phase scaffolding still reads coherently.
+    prompt = prompt.replace(
+      /<milestone name="(\d+\.\d+)([^"]*)">[\s\S]*?<\/milestone>/g,
+      (match, id, rest) => {
+        if (selected.has(id)) return match;
+        return `<milestone name="${id}${rest}">(omitted in test mode)</milestone>`;
+      }
+    );
+
+    // Inject a <test_mode> block at the very top of <system_prompt> so
+    // it lands before any other rule the model encounters.
+    const ordered = testMilestones.join(", ");
+    const testModeBlock = `<test_mode>
+  YOU ARE IN TEST MODE. The operator has selected specific milestones
+  to run for this call. The normal call flow is suspended:
+
+  - Skip Step 0 identity verification, Step 1 introduction, and
+    Step 2 consent entirely. The session-opening blocks have been
+    stripped from this prompt.
+  - Skip the closing protocol entirely. The closing_protocol and
+    next_session_scheduling blocks have been stripped.
+  - Do NOT invoke schedule_next_session. Do NOT speak the
+    "Before we go, I'd like to schedule our next conversation" line.
+
+  Milestones to run, in this order: ${ordered}
+
+  Behaviour:
+  - Open the call by going DIRECTLY to the first selected
+    milestone's opening probe. The platform has already spoken a
+    brief test-mode greeting ("Test call. Jumping to milestone
+    ${testMilestones[0]}."). Your first spoken turn should be the
+    milestone's first question — no greeting, no introduction, no
+    name confirmation.
+  - When a milestone reaches its exit condition or hard fallback,
+    transition to the next selected milestone with ONE short
+    bridge sentence: "Let's switch topics." Do not summarise. Do
+    not re-introduce yourself.
+  - After the LAST selected milestone exits, speak one closing
+    sentence: "Test call complete. Goodbye." Then invoke endCall.
+    Do not attempt to schedule anything.
+  - All other behavioural rules remain in effect: evaluation_rule,
+    voice_and_manner, following_unexpected_depth,
+    milestone_resumption_marker, handling_contradictions,
+    endcall_safety, post_close_behaviour (with the trigger being
+    "Test call complete. Goodbye." instead of the normal close).
+  - Milestones not in the selected list have been replaced with
+    "(omitted in test mode)" placeholders. Do not attempt to run
+    them. If the conversation drifts into one of their topics
+    organically (e.g., a tangent), handle per
+    <following_unexpected_depth> normally — do not try to "run"
+    the omitted milestone.
+
+  This block is present ONLY when test mode is active. In normal
+  production calls it does not appear and all the stripped blocks
+  are present.
+</test_mode>
+
+`;
+    prompt = prompt.replace(/<system_prompt>\s*/, `<system_prompt>\n\n${testModeBlock}`);
+
+    console.log("Test mode active for this call:", { milestones: testMilestones });
+  }
+
   return prompt;
 }
 
@@ -791,6 +877,27 @@ function consentStatementEnabled() {
   return String(process.env.CONSENT_STATEMENT_ENABLED || "true").toLowerCase() !== "false";
 }
 
+// Test-mode milestone selector. Accepts:
+//   - undefined / null / "" / "all" → test mode OFF (returns null)
+//   - "1.3,2.1" (comma-separated X.Y IDs) → returns ["1.3","2.1"]
+// Whitespace is tolerated. Format validated to prevent garbage from
+// silently breaking the prompt assembly. Returns null on invalid input
+// AND logs a warning — falling back to normal mode is safer than
+// shipping a half-stripped prompt.
+function parseTestMilestones(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s || s.toLowerCase() === "all") return null;
+  // Each segment must look like \d+\.\d+ — Phase.Milestone, no name.
+  const parts = s.split(",").map(p => p.trim()).filter(Boolean);
+  const valid = parts.every(p => /^\d+\.\d+$/.test(p));
+  if (!valid || parts.length === 0) {
+    console.warn(`parseTestMilestones: invalid value "${raw}" — falling back to normal (all) mode. Format: "1.3,2.1".`);
+    return null;
+  }
+  return parts;
+}
+
 // Load the prescreening prompt and strip the step_0 identity-check block
 // when no participant name was provided. Mirrors the per-call stripping
 // pattern used in loadPromptForCall for the interview prompt.
@@ -803,12 +910,13 @@ function loadPrescreeningPrompt({ hasName = false }) {
   return prompt;
 }
 
-async function buildModelOverride({ isCallback, activeSession = 1, hasName = false, callKind = "interview" }) {
+async function buildModelOverride({ isCallback, activeSession = 1, hasName = false, callKind = "interview", testMilestones = null }) {
   const template = await getModelTemplate();
   const content = callKind === "prescreening"
     ? loadPrescreeningPrompt({ hasName })
     : loadPromptForCall({
-        isCallback, activeSession, hasName, consentEnabled: consentStatementEnabled()
+        isCallback, activeSession, hasName, consentEnabled: consentStatementEnabled(),
+        testMilestones
       });
   return {
     ...template,
@@ -830,7 +938,14 @@ async function buildModelOverride({ isCallback, activeSession = 1, hasName = fal
 //   should be a brief callback acknowledgment ("calling you back as we
 //   arranged"), not a fresh "may I speak with..." which would imply we
 //   don't know whom we just spoke to a few minutes ago.
-function buildFirstMessageOverride({ hasName, isCallback }) {
+function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null }) {
+  // Test mode wins over every other case: regardless of hasName /
+  // isCallback, we want an audibly distinctive greeting that signals
+  // "this is a test call" so the operator (and any human listener)
+  // immediately knows the normal flow is not running.
+  if (Array.isArray(testMilestones) && testMilestones.length > 0) {
+    return `Test call. Jumping to milestone ${testMilestones[0]}.`;
+  }
   if (isCallback && hasName) {
     return "Hi {{PARTICIPANT_NAME}}, this is Imani from the Clean Cooking Alliance again — I'm calling you back as we arranged.";
   }
@@ -843,15 +958,15 @@ function buildFirstMessageOverride({ hasName, isCallback }) {
   return undefined;
 }
 
-async function startVapiCall({ assistantId, customerNumber, variableValues }) {
+async function startVapiCall({ assistantId, customerNumber, variableValues, testMilestones = null }) {
   const isCallback = variableValues?.IS_CALLBACK === "true";
   const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
   const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
   const callKind = variableValues?.CALL_KIND || "interview";
-  const firstMessage = buildFirstMessageOverride({ hasName, isCallback });
+  const firstMessage = buildFirstMessageOverride({ hasName, isCallback, testMilestones });
   const assistantOverrides = {
     variableValues,
-    model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
+    model: await buildModelOverride({ isCallback, activeSession, hasName, callKind, testMilestones })
   };
   if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
   return vapiPost("/call", {
@@ -1048,13 +1163,20 @@ app.post("/start-call", async (req, res) => {
       // operator UI's <input type="datetime-local">. If present, the call is
       // scheduled for the future in the timezone inferred from the phone
       // number's country code. If empty/missing, the call dials immediately.
-      scheduledAtLocal
+      scheduledAtLocal,
+      // Optional test-mode milestone selector. "all" / "" / absent → normal
+      // call. "1.3,2.1" → strip intro/consent/closing, strip non-selected
+      // milestones, jump straight to first selected milestone with an
+      // audibly distinctive test-mode greeting. See parseTestMilestones.
+      testMilestones: testMilestonesRaw
     } = req.body || {};
 
     if (!customerNumber) return res.status(400).json({ error: "Missing customerNumber" });
     if (![1, 2, 3].includes(sessionNumber)) {
       return res.status(400).json({ error: "sessionNumber must be 1, 2, or 3" });
     }
+
+    const testMilestones = parseTestMilestones(testMilestonesRaw);
 
     const participant = await upsertParticipant({ phoneNumber: customerNumber, name });
     const session = await createSessionRow({
@@ -1098,15 +1220,18 @@ app.post("/start-call", async (req, res) => {
 
     if (scheduledUtcIso) {
       // Future-scheduled: hand off to Vapi's native scheduler.
+      const firstMessage = buildFirstMessageOverride({ hasName, isCallback: false, testMilestones });
+      const overrides = {
+        variableValues,
+        model: await buildModelOverride({ isCallback: false, activeSession: sessionNumber, hasName, testMilestones })
+      };
+      if (firstMessage !== undefined) overrides.firstMessage = firstMessage;
       const result = await vapiPost("/call", {
         assistantId: assistantId || ASSISTANT_ID,
         phoneNumberId: PHONE_NUMBER_ID,
         customer: { number: customerNumber },
         schedulePlan: { earliestAt: scheduledUtcIso },
-        assistantOverrides: {
-          variableValues,
-          model: await buildModelOverride({ isCallback: false, activeSession: sessionNumber, hasName })
-        }
+        assistantOverrides: overrides
       });
       vapiCallId = result?.id;
       vapiStatus = result?.status;
@@ -1114,7 +1239,8 @@ app.post("/start-call", async (req, res) => {
       const started = await startVapiCall({
         assistantId: assistantId || ASSISTANT_ID,
         customerNumber,
-        variableValues
+        variableValues,
+        testMilestones
       });
       vapiCallId = started?.id;
       vapiStatus = started?.status;
