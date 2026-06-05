@@ -197,6 +197,51 @@ function inferCountryFromPhone(phoneNumber) {
   }
 }
 
+// Return just the ISO alpha-2 country code (e.g. "NG", "US") for the
+// destination number, or "" if unparseable. Used by getPhoneNumberId to
+// route the outbound dial to the right Vapi phone number (BYO trunk per
+// country, because cost varies by carrier and country).
+function inferIsoCountry(phoneNumber) {
+  if (!phoneNumber) return "";
+  try {
+    const parsed = parsePhoneNumberFromString(phoneNumber);
+    return (parsed && parsed.country) || "";
+  } catch {
+    return "";
+  }
+}
+
+// Map from ISO alpha-2 country code → Vapi phone number ID, for
+// country-specific carrier routing. Phone number IDs are NOT secrets;
+// hard-coding them in the repo is fine. To add a country: look up the
+// Vapi phone number ID in the Vapi dashboard (Phone Numbers tab) and
+// add an entry below.
+//
+// Calls to countries NOT in this map fall back to PHONE_NUMBER_ID
+// (the env var), so removing an entry or starting with an empty map
+// preserves the previous single-trunk behaviour.
+const COUNTRY_PHONE_NUMBER_IDS = {
+  // NG: "phnum_xxxxxxxxxxxxxxxxx",  // Nigeria (KrosAI BYO trunk)
+  // US: "phnum_yyyyyyyyyyyyyyyyy",  // United States
+  // KE: "phnum_zzzzzzzzzzzzzzzzz",  // Kenya
+};
+
+// Pick the right Vapi phone number ID for an outbound call based on the
+// destination country. Falls back to the PHONE_NUMBER_ID env var when
+// the destination country isn't in COUNTRY_PHONE_NUMBER_IDS.
+function getPhoneNumberId(customerNumber) {
+  const iso = inferIsoCountry(customerNumber);
+  if (iso && COUNTRY_PHONE_NUMBER_IDS[iso]) {
+    return COUNTRY_PHONE_NUMBER_IDS[iso];
+  }
+  if (iso) {
+    console.log(`getPhoneNumberId: no entry for ${iso} (number=${customerNumber}); using PHONE_NUMBER_ID fallback`);
+  } else {
+    console.warn(`getPhoneNumberId: could not infer country from ${customerNumber}; using PHONE_NUMBER_ID fallback`);
+  }
+  return PHONE_NUMBER_ID;
+}
+
 const WORD_NUMBERS = {
   one: 1, two: 2, three: 3, four: 4, five: 5,
   six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
@@ -1025,7 +1070,7 @@ async function startVapiCall({ assistantId, customerNumber, variableValues, test
   if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
   return vapiPost("/call", {
     assistantId,
-    phoneNumberId: PHONE_NUMBER_ID,
+    phoneNumberId: getPhoneNumberId(customerNumber),
     customer: { number: customerNumber },
     assistantOverrides
   });
@@ -1075,7 +1120,7 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
   if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
   return vapiPost("/call", {
     assistantId,
-    phoneNumberId: PHONE_NUMBER_ID,
+    phoneNumberId: getPhoneNumberId(customerNumber),
     customer: { number: customerNumber },
     schedulePlan: { earliestAt: earliestAtIso },
     assistantOverrides
@@ -1284,7 +1329,7 @@ app.post("/start-call", async (req, res) => {
       if (firstMessage !== undefined) overrides.firstMessage = firstMessage;
       const result = await vapiPost("/call", {
         assistantId: assistantId || ASSISTANT_ID,
-        phoneNumberId: PHONE_NUMBER_ID,
+        phoneNumberId: getPhoneNumberId(customerNumber),
         customer: { number: customerNumber },
         schedulePlan: { earliestAt: scheduledUtcIso },
         assistantOverrides: overrides
@@ -1415,7 +1460,7 @@ app.post("/start-prescreening", async (req, res) => {
     if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
     const baseBody = {
       assistantId: ASSISTANT_ID,
-      phoneNumberId: PHONE_NUMBER_ID,
+      phoneNumberId: getPhoneNumberId(customerNumber),
       customer: { number: customerNumber },
       assistantOverrides
     };
@@ -2360,7 +2405,7 @@ app.post("/vapi", async (req, res) => {
           if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
           scheduled = await vapiPost("/call", {
             assistantId: assistantIdForNext,
-            phoneNumberId: PHONE_NUMBER_ID,
+            phoneNumberId: getPhoneNumberId(customerNumber),
             customer: { number: customerNumber },
             schedulePlan: { earliestAt: utcTarget.toISOString() },
             assistantOverrides
@@ -2619,7 +2664,7 @@ app.post("/timing/fire-callback", async (req, res) => {
     if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
     const result = await vapiPost("/call", {
       assistantId,
-      phoneNumberId: PHONE_NUMBER_ID,
+      phoneNumberId: getPhoneNumberId(customerNumber),
       customer: { number: customerNumber },
       assistantOverrides
     });
