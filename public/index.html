@@ -97,15 +97,16 @@
       letter-spacing: 0.03em;
     }
     table.calls col.col-select    { width: 3%;  }
-    table.calls col.col-phone     { width: 11%; }
-    table.calls col.col-name      { width: 12%; }
-    table.calls col.col-schedule  { width: 14%; }
-    table.calls col.col-when      { width: 12%; }
+    table.calls col.col-phone     { width: 10%; }
+    table.calls col.col-name      { width: 11%; }
+    table.calls col.col-schedule  { width: 12%; }
+    table.calls col.col-test      { width: 9%;  }
+    table.calls col.col-when      { width: 11%; }
     table.calls col.col-duration  { width: 7%;  }
     table.calls col.col-session   { width: 5%;  }
-    table.calls col.col-status    { width: 9%;  }
-    table.calls col.col-notes     { width: 13%; }
-    table.calls col.col-actions   { width: 14%; }
+    table.calls col.col-status    { width: 8%;  }
+    table.calls col.col-notes     { width: 11%; }
+    table.calls col.col-actions   { width: 13%; }
     table.calls td.select, table.calls th.select { text-align: center; }
     table.calls input[type="checkbox"] { cursor: pointer; }
     tr.selected td { background: #eff6ff; }
@@ -272,7 +273,7 @@
         <th>Phone</th>
         <th>Name</th>
         <th>Schedule <span style="font-weight:400;color:#6b7280;">(blank = now)</span></th>
-        <th title="Test mode: comma-separated milestone IDs to run (e.g. 1.3,2.1). Skips intro, consent, closing, scheduling. Bot opens with 'Test call. Jumping to milestone X.Y.' Leave blank for normal calls.">Test mode <span style="font-weight:400;color:#6b7280;">(e.g. 1.3,2.1)</span></th>
+        <th title="Test mode: comma-separated milestone IDs to run (e.g. 1.3,2.1). Skips intro, consent, closing, scheduling. Bot opens with 'Test call. Jumping to milestone X.Y.' Leave blank for normal calls.">Test mode</th>
         <th>Scheduled for</th>
         <th title="Length of the actual call. Short values (under 30s) usually indicate the call ended prematurely.">Duration</th>
         <th>Session</th>
