@@ -1921,6 +1921,33 @@ app.post("/vapi", async (req, res) => {
         });
       }
 
+      // ---- log_resumption: silent milestone-resumption inventory ----
+      // Same async/silent pattern as log_classification. Invoked when
+      // Imani returns to the current milestone after engaging with
+      // off-milestone content for two or more probes — forces the model
+      // to verbalize what's on record / what's missing / what the next
+      // probe will address, so the implicit milestone tracker stops
+      // drifting after sustained tangents. Args land in artifact.messages
+      // for analyst review.
+      if (fn?.name === "log_resumption") {
+        try {
+          const args = fn.arguments || {};
+          console.log("log_resumption:", {
+            callId: message?.call?.id,
+            milestone: args.milestone_name,
+            exitMet: args.exit_condition_met,
+            next: (args.next_action || "").slice(0, 120),
+            missing: (args.missing || "").slice(0, 180)
+          });
+        } catch {}
+        return res.json({
+          results: [{
+            toolCallId: toolCall.toolCallId || toolCall.id,
+            result: "ok"
+          }]
+        });
+      }
+
       // ---- prescreening_complete: end-of-prescreening close + hang up ----
       // The tool itself carries the verbatim close in request-complete +
       // endCallAfterSpokenEnabled. Server just acknowledges the invocation

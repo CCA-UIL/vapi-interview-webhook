@@ -1,0 +1,37 @@
+{
+  "type": "function",
+  "async": true,
+  "function": {
+    "name": "log_resumption",
+    "description": "Invoke this tool BEFORE producing your spoken probe whenever you are returning to the current milestone after engaging with off-milestone content for two or more probes (Case A or Case B in <following_unexpected_depth>). The tool is silent — it produces NO audible output. Its purpose is to force you to verbalize a resumption inventory (milestone, on-record content for that milestone, what's missing relative to its exit condition, whether the exit condition is met, and what the next probe will address). LLMs reason better in visible output than in hidden state — the same principle behind the visible precedence_walk argument in log_classification. The tool runs asynchronously; you do not wait for a result. Invoke ONCE per tangent return, not on every turn — once you've returned and invoked it, continue normally until either the milestone exits or another tangent emerges.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "milestone_name": {
+          "type": "string",
+          "description": "The milestone you are returning to, formatted as 'X.Y [milestone name]'. Example: '2.1 Weekly Meal Landscape'."
+        },
+        "on_record": {
+          "type": "string",
+          "description": "Specific content already collected for THIS milestone, not from the tangent. Be concrete (named meals, named people, named appliances, named days — not 'various things'). Example for Milestone 2.1: 'Monday dinner (rice/beans, EPC, fresh), Tuesday dinner (vegetable stew, EPC, fresh), uniform breakfast (tea/bread × 7 days), weekday lunch skipped'."
+        },
+        "missing": {
+          "type": "string",
+          "description": "Specific gaps relative to the milestone's exit condition. Named items, not vague categories. Example for Milestone 2.1: 'Wed/Thu/Fri/Sat/Sun dinners with appliance and freshness; weekend lunch confirmation'."
+        },
+        "exit_condition_met": {
+          "type": "boolean",
+          "description": "True only if the milestone's exit condition is genuinely satisfied. If true, the next_action field should be 'advance to milestone X.(Y+1)'. If false, the next_action must address one of the items in the missing field."
+        },
+        "next_action": {
+          "type": "string",
+          "description": "What the next spoken probe will do. If exit_condition_met is false, name the specific missing item the probe will address (e.g., 'ask about Wednesday dinner'). If exit_condition_met is true, write 'advance to milestone X.(Y+1)'."
+        }
+      },
+      "required": ["milestone_name", "on_record", "missing", "exit_condition_met", "next_action"]
+    }
+  },
+  "messages": [
+    { "type": "request-start", "content": "" }
+  ]
+}
