@@ -523,20 +523,29 @@ function shouldAutoRetryAfterDrop({ endedReason, transcriptStructured, callKind 
   // Hard cap fired: call hit max length. Natural completion.
   if (r.includes("exceeded-max-duration")) return null;
 
-  // Dial-time failures: participant didn't pick up. Not a drop. A
-  // separate no-answer retry strategy could cover these later.
+  // Dial-time failures where the participant is reachable but chose
+  // not to engage (no answer, voicemail, busy) or where the number is
+  // bad. Not retried by this mechanism. A separate no-answer retry
+  // strategy could cover these later.
   if (r.includes("did-not-answer") || r.includes("no-answer")) return null;
   if (r.includes("voicemail")) return null;
   if (r.startsWith("customer-busy")) return null;
   if (r.includes("invalid")) return null;
-  // Pre-connect SIP failures (outbound never reached the participant)
-  // look like "call.in-progress.error-sip-outbound-call-failed-to-connect"
-  // or similar. Treat as dial-time failure, not a drop.
-  if (r.includes("failed-to-connect")) return null;
 
-  // Customer hung up: only retry if they didn't go through normal
-  // scheduling/closing/wrong-number paths. If schedule_callback fired,
-  // they already get a follow-up via the user-initiated mechanism.
+  // Did the participant actually make it onto the line? Used to
+  // distinguish a pre-connect SIP/provider failure (no transcript, no
+  // resume context — retry like a fresh attempt) from a mid-call drop
+  // (transcript exists — use the "our call dropped" greeting + resume
+  // mechanism). More reliable than substring-matching the reason
+  // string, which has many provider-specific shapes.
+  const hadParticipantOnLine =
+    Array.isArray(transcriptStructured) &&
+    transcriptStructured.some(m => m.role === "user");
+
+  // Customer hung up mid-session: only retry if they didn't go through
+  // normal scheduling/closing/wrong-number paths. If schedule_callback
+  // fired, they already get a follow-up via the user-initiated
+  // mechanism.
   if (r === "customer-ended-call") {
     const toolNames = (transcriptStructured || [])
       .filter(m => m.role === "tool_calls")
@@ -547,12 +556,19 @@ function shouldAutoRetryAfterDrop({ endedReason, transcriptStructured, callKind 
     return "customer-hung-up-mid-session";
   }
 
-  // Silence timeout mid-call: participant probably stepped away or is in
-  // a noisy environment. Auto-redial once gives a clean second chance.
+  // Silence timeout mid-call: participant probably stepped away or is
+  // in a noisy environment. Auto-redial once gives a clean second
+  // chance.
   if (r.includes("silence-timed-out")) return "silence-timed-out";
 
-  // Mid-call SIP / provider errors: legitimate drops.
-  if (r.startsWith("call.in-progress.error-")) return "carrier-drop";
+  // SIP / provider errors. Two sub-cases:
+  // - participant never on the line → "failed-to-connect" (sporadic
+  //   trunk/provider faults on the BYO carrier, observed in production
+  //   for valid numbers).
+  // - participant was on the line → "carrier-drop" (true mid-call drop).
+  if (r.startsWith("call.in-progress.error-")) {
+    return hadParticipantOnLine ? "carrier-drop" : "failed-to-connect";
+  }
 
   return null;
 }
@@ -2739,10 +2755,34 @@ app.post("/vapi", async (req, res) => {
                 autoRetryCountBySession.set(key, priorCount + 1);
                 const earliestAtIso = new Date(Date.now() + AUTO_RETRY_DELAY_SECONDS * 1000).toISOString();
                 const priorChainTranscript = liveVars.RESUMED_FROM_TRANSCRIPT || "";
-                const resumedFromTranscript = await buildResumedTranscript({
-                  currentCallId: callId,
-                  priorChainTranscript
-                });
+
+                // Branch on retry kind:
+                // - Mid-call drop / silence / carrier-drop: participant was
+                //   on the line, so the retry uses the "our call dropped"
+                //   greeting (autoRetryAfterDrop=true), forces
+                //   isCallback=true so the model takes the callback flow,
+                //   and fetches the current call's transcript to
+                //   accumulate into the resume context.
+                // - failed-to-connect (pre-connect SIP/provider error):
+                //   participant never on the line. Retry should look like
+                //   a fresh attempt — preserve the ORIGINAL IS_CALLBACK
+                //   (the call might have been an initial dial OR a prior
+                //   callback that didn't connect), use the original
+                //   greeting (not the drop greeting), and don't try to
+                //   fetch a transcript (there isn't one; just carry
+                //   forward whatever prior chain came with this attempt).
+                const isPreConnectFailure = retryReason === "failed-to-connect";
+                const retryIsCallback = isPreConnectFailure
+                  ? (liveVars.IS_CALLBACK === "true")
+                  : true;
+                const retryAutoRetryAfterDrop = !isPreConnectFailure;
+                const resumedFromTranscript = isPreConnectFailure
+                  ? priorChainTranscript
+                  : await buildResumedTranscript({
+                      currentCallId: callId,
+                      priorChainTranscript
+                    });
+
                 const participantName = liveVars.PARTICIPANT_NAME || "";
                 const assistantIdForRetry =
                   call?.assistantId || message?.assistant?.id || ASSISTANT_ID;
@@ -2753,21 +2793,23 @@ app.post("/vapi", async (req, res) => {
                   variableValues: buildVariableValues({
                     activeSession: sessionForKey,
                     priorSessionsContext: liveVars.PRIOR_SESSIONS_CONTEXT || "",
-                    isCallback: true,
+                    isCallback: retryIsCallback,
                     participantName,
                     country: inferCountryFromPhone(customerNumber),
                     callKind: "interview",
                     resumedFromTranscript
                   }),
-                  autoRetryAfterDrop: true
+                  autoRetryAfterDrop: retryAutoRetryAfterDrop
                 });
                 markScheduled(callId);
-                console.log("Auto-retry scheduled after drop", {
+                console.log("Auto-retry scheduled", {
                   vapiCallId: scheduled?.id,
                   customerNumber,
                   sessionForKey,
                   retryAttempt: priorCount + 1,
                   retryReason,
+                  isPreConnectFailure,
+                  retryIsCallback,
                   earliestAtIso
                 });
                 // Persist a scheduled_calls row so the operator dashboard
