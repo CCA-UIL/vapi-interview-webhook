@@ -221,7 +221,7 @@ function inferIsoCountry(phoneNumber) {
 // (the env var), so removing an entry or starting with an empty map
 // preserves the previous single-trunk behaviour.
 const COUNTRY_PHONE_NUMBER_IDS = {
-  // NG: "phnum_xxxxxxxxxxxxxxxxx",  // Nigeria (KrosAI BYO trunk)
+  NG: "bb809460-d4c9-4fdf-9e9d-7a78b2a0181b",  // Nigeria (KrosAI BYO trunk)
   // US: "phnum_yyyyyyyyyyyyyyyyy",  // United States
   // KE: "phnum_zzzzzzzzzzzzzzzzz",  // Kenya
 };
@@ -503,6 +503,18 @@ const autoRetryCountBySession = new Map();
 function autoRetryKey(participantId, sessionNumber) {
   return `${participantId}:${sessionNumber}`;
 }
+
+// Pending schedule_callback intents, keyed by the current Vapi call ID.
+// schedule_callback fires MID-CALL, but Vapi's artifact.transcript isn't
+// populated until the call ends. To pass a complete prior-call transcript
+// into the rescheduled call (the resume-from-callback mechanism), we
+// store the callback intent here when the tool fires and drain it at
+// end-of-call-report when the full transcript is available directly in
+// the webhook payload. Resets on server restart — if the server crashes
+// between schedule_callback and end-of-call-report, the participant
+// won't get called back. For the pilot's scale this is acceptable;
+// persist to Supabase if it becomes a real reliability issue.
+const pendingCallbacksByCallId = new Map();
 
 // Decide whether a just-ended call should be auto-redialed because it
 // looks like an unexpected drop (carrier error, silence timeout, or a
@@ -2219,59 +2231,34 @@ app.post("/vapi", async (req, res) => {
         const priorContext = liveVars.PRIOR_SESSIONS_CONTEXT || "";
         const participantName = liveVars.PARTICIPANT_NAME || "";
         const callKind = liveVars.CALL_KIND || "interview";
+        const priorChainTranscript = liveVars.RESUMED_FROM_TRANSCRIPT || "";
 
-        // Build the resume-from-transcript blob so the new call can pick up
-        // where this one left off. Concatenates any prior chain transcript
-        // (if THIS call was itself a resumed callback) with this call's
-        // transcript-so-far. Gated on interview calls only — prescreening
-        // doesn't need resume context.
-        let resumedFromTranscript = "";
-        if (callKind === "interview") {
-          const priorChainTranscript = liveVars.RESUMED_FROM_TRANSCRIPT || "";
-          resumedFromTranscript = await buildResumedTranscript({
-            currentCallId: callId,
-            priorChainTranscript
-          });
-        }
-
-        const scheduled = await scheduleVapiCallback({
-          assistantId: assistantIdForCallback,
+        // Defer the actual Vapi scheduling to end-of-call-report. This
+        // tool fires MID-CALL, but Vapi's artifact.transcript isn't
+        // populated until the call ends — so a fetch here would miss
+        // everything the participant just said and the rescheduled call
+        // would have an incomplete resume context. Instead we store the
+        // intent in pendingCallbacksByCallId and drain it at end-of-call
+        // when the full transcript arrives in the webhook payload (no
+        // API round-trip needed). markScheduled prevents the heuristic
+        // fallback paths from also trying to schedule on the same call.
+        pendingCallbacksByCallId.set(callId, {
+          utcTargetIso: utcTarget.toISOString(),
+          suggestedTime,
           customerNumber,
-          earliestAtIso: utcTarget.toISOString(),
-          variableValues: buildVariableValues({
-            activeSession: currentSession,
-            priorSessionsContext: priorContext,
-            isCallback: true,
-            participantName,
-            country: inferCountryFromPhone(customerNumber),
-            callKind,
-            resumedFromTranscript
-          })
+          assistantId: assistantIdForCallback,
+          currentSession,
+          priorContext,
+          participantName,
+          callKind,
+          priorChainTranscript,
+          storedAt: new Date().toISOString()
         });
-
         markScheduled(callId || `${customerNumber}:${suggestedTime}`);
-
-        try {
-          const { data: p } = await supabase
-            .from("participants")
-            .select("id")
-            .eq("phone_number", customerNumber)
-            .maybeSingle();
-          if (p?.id && callKind === "interview") {
-            // Interview callbacks get a scheduled_calls row for the
-            // operator dashboard. Prescreening callbacks do not — they
-            // land in prescreening_responses only when the call completes.
-            await recordScheduledCall({
-              participantId: p.id,
-              sessionNumber: currentSession,
-              scheduledAt: utcTarget.toISOString(),
-              vapiCallId: scheduled?.id,
-              nameAtCall: participantName
-            });
-          }
-        } catch (e) {
-          console.error("Persist scheduled_calls failed:", e);
-        }
+        console.log("schedule_callback intent stored; will dial at end-of-call-report", {
+          callId, customerNumber, suggestedTime, utcTarget: utcTarget.toISOString(),
+          priorChainTranscriptLength: priorChainTranscript.length
+        });
 
         return res.json({
           results: [{
@@ -2686,6 +2673,76 @@ app.post("/vapi", async (req, res) => {
           .update(updates)
           .eq("vapi_call_id", callId);
         if (scUpdErr) console.warn("scheduled_calls update failed:", scUpdErr.message);
+      }
+
+      // Drain any pending schedule_callback intent stored mid-call. The
+      // tool fired earlier in the call but deferred the actual Vapi
+      // dial to here so the resume-from-transcript blob can include the
+      // FULL current-call transcript (which is in `transcript` above,
+      // sourced directly from the webhook payload — no API round-trip).
+      // markScheduled was already called in the tool handler, so the
+      // fallback extract-from-transcript and auto-retry paths below
+      // will see this call as already-scheduled and skip.
+      if (callId && pendingCallbacksByCallId.has(callId)) {
+        const intent = pendingCallbacksByCallId.get(callId);
+        pendingCallbacksByCallId.delete(callId);
+        try {
+          const currentCallTranscript = (transcript || "").trim();
+          const parts = [intent.priorChainTranscript, currentCallTranscript]
+            .map(s => (s || "").trim())
+            .filter(Boolean);
+          let combined = parts.join("\n\n--- [next call attempt] ---\n\n");
+          const MAX_CHARS = 30000;
+          if (combined.length > MAX_CHARS) {
+            combined = "(... earlier portions of this call chain truncated for length; the most recent ~30k characters follow ...)\n\n" + combined.slice(-MAX_CHARS);
+          }
+          const scheduled = await scheduleVapiCallback({
+            assistantId: intent.assistantId,
+            customerNumber: intent.customerNumber,
+            earliestAtIso: intent.utcTargetIso,
+            variableValues: buildVariableValues({
+              activeSession: intent.currentSession,
+              priorSessionsContext: intent.priorContext,
+              isCallback: true,
+              participantName: intent.participantName,
+              country: inferCountryFromPhone(intent.customerNumber),
+              callKind: intent.callKind,
+              resumedFromTranscript: combined
+            })
+          });
+          console.log("Deferred schedule_callback fired at end-of-call-report", {
+            vapiCallId: scheduled?.id,
+            customerNumber: intent.customerNumber,
+            currentSession: intent.currentSession,
+            suggestedTime: intent.suggestedTime,
+            utcTarget: intent.utcTargetIso,
+            resumedFromTranscriptLength: combined.length,
+            priorChainLength: intent.priorChainTranscript.length,
+            currentTranscriptLength: currentCallTranscript.length
+          });
+          if (intent.callKind === "interview") {
+            try {
+              const { data: p } = await supabase
+                .from("participants")
+                .select("id")
+                .eq("phone_number", intent.customerNumber)
+                .maybeSingle();
+              if (p?.id) {
+                await recordScheduledCall({
+                  participantId: p.id,
+                  sessionNumber: intent.currentSession,
+                  scheduledAt: intent.utcTargetIso,
+                  vapiCallId: scheduled?.id,
+                  nameAtCall: intent.participantName
+                });
+              }
+            } catch (e) {
+              console.error("Deferred schedule_callback recordScheduledCall failed:", e);
+            }
+          }
+        } catch (e) {
+          console.error("Deferred schedule_callback failed:", e);
+        }
       }
 
       if (customerNumber) {
