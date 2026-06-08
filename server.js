@@ -468,6 +468,53 @@ async function recordScheduledCall({ participantId, sessionNumber, scheduledAt, 
   if (error) console.error("recordScheduledCall failed:", error.message);
 }
 
+// Fetch a Vapi call's transcript-so-far via the API. Safe to call while the
+// call is still in progress — Vapi returns the transcript accumulated up to
+// the moment of the GET. Returns "" on any failure (network, 404, missing
+// artifact). Used by buildResumedTranscript when scheduling a callback so
+// the rescheduled call can resume from where the conversation left off.
+async function fetchVapiCallTranscript(vapiCallId) {
+  if (!vapiCallId) return "";
+  try {
+    const resp = await fetch(`https://api.vapi.ai/call/${vapiCallId}`, {
+      headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
+    });
+    if (!resp.ok) {
+      console.warn(`fetchVapiCallTranscript: GET /call/${vapiCallId} returned ${resp.status}`);
+      return "";
+    }
+    const data = await resp.json();
+    return (data.artifact && data.artifact.transcript) || "";
+  } catch (e) {
+    console.warn("fetchVapiCallTranscript failed", { vapiCallId, error: String(e) });
+    return "";
+  }
+}
+
+// Assemble the transcript that the bot will see on a callback so it can
+// resume from where it left off. Concatenates the prior chain (transcripts
+// from earlier callback attempts in this same session) with the current
+// call's transcript-so-far, joined by a clear separator. Caps the total
+// length so a long callback chain doesn't bloat the prompt.
+//
+// MAX_CHARS chosen as ~30000 chars ≈ ~7500 input tokens — small relative
+// to the existing 167KB system prompt, but enough to hold roughly an
+// hour of dense conversation. Truncates from the FRONT (keep the most
+// recent content) when over the cap.
+async function buildResumedTranscript({ currentCallId, priorChainTranscript = "" }) {
+  const currentTranscript = await fetchVapiCallTranscript(currentCallId);
+  const parts = [priorChainTranscript, currentTranscript]
+    .map(s => (s || "").trim())
+    .filter(Boolean);
+  if (parts.length === 0) return "";
+  let combined = parts.join("\n\n--- [next call attempt] ---\n\n");
+  const MAX_CHARS = 30000;
+  if (combined.length > MAX_CHARS) {
+    combined = "(... earlier portions of this call chain truncated for length; the most recent ~30k characters follow ...)\n\n" + combined.slice(-MAX_CHARS);
+  }
+  return combined;
+}
+
 // Update the scheduled_calls row whose vapi_call_id matches the just-ended
 // call. Each attempt now carries its own outcome (status). Avoids the
 // "join by (participant, session)" problem where two attempts to the same
@@ -1208,7 +1255,7 @@ async function qstashScheduleAt({ url, notBeforeSeconds, body }) {
   return { status: resp.status, body: text };
 }
 
-function buildVariableValues({ activeSession, priorSessionsContext, isCallback, participantName, country, callKind = "interview" }) {
+function buildVariableValues({ activeSession, priorSessionsContext, isCallback, participantName, country, callKind = "interview", resumedFromTranscript = "" }) {
   return {
     ACTIVE_SESSION: String(activeSession),
     PRIOR_SESSIONS_CONTEXT: priorSessionsContext || "",
@@ -1217,7 +1264,8 @@ function buildVariableValues({ activeSession, priorSessionsContext, isCallback, 
     SCREENING_QUESTIONS_JSON,
     PARTICIPANT_NAME: participantName || "",
     COUNTRY: country || "",
-    CALL_KIND: callKind
+    CALL_KIND: callKind,
+    RESUMED_FROM_TRANSCRIPT: resumedFromTranscript || ""
   };
 }
 
@@ -2079,6 +2127,20 @@ app.post("/vapi", async (req, res) => {
         const participantName = liveVars.PARTICIPANT_NAME || "";
         const callKind = liveVars.CALL_KIND || "interview";
 
+        // Build the resume-from-transcript blob so the new call can pick up
+        // where this one left off. Concatenates any prior chain transcript
+        // (if THIS call was itself a resumed callback) with this call's
+        // transcript-so-far. Gated on interview calls only — prescreening
+        // doesn't need resume context.
+        let resumedFromTranscript = "";
+        if (callKind === "interview") {
+          const priorChainTranscript = liveVars.RESUMED_FROM_TRANSCRIPT || "";
+          resumedFromTranscript = await buildResumedTranscript({
+            currentCallId: callId,
+            priorChainTranscript
+          });
+        }
+
         const scheduled = await scheduleVapiCallback({
           assistantId: assistantIdForCallback,
           customerNumber,
@@ -2089,7 +2151,8 @@ app.post("/vapi", async (req, res) => {
             isCallback: true,
             participantName,
             country: inferCountryFromPhone(customerNumber),
-            callKind
+            callKind,
+            resumedFromTranscript
           })
         });
 
