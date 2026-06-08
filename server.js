@@ -491,6 +491,72 @@ async function fetchVapiCallTranscript(vapiCallId) {
   }
 }
 
+// In-memory counter for auto-retries after a drop, keyed by
+// `${participantId}:${sessionNumber}`. Resets on server restart (acceptable
+// MVP — operator can manually retry from the dashboard). Used by the
+// end-of-call-report handler to cap how many times we auto-redial after
+// an unexpected call drop in the same session.
+const AUTO_RETRY_CAP = 2;
+const AUTO_RETRY_DELAY_SECONDS = 30;
+const autoRetryCountBySession = new Map();
+
+function autoRetryKey(participantId, sessionNumber) {
+  return `${participantId}:${sessionNumber}`;
+}
+
+// Decide whether a just-ended call should be auto-redialed because it
+// looks like an unexpected drop (carrier error, silence timeout, or a
+// customer hangup that didn't go through the normal scheduling/closing
+// flow). Returns a string reason when retry is warranted, or null when
+// the call ended through a known/intended path.
+function shouldAutoRetryAfterDrop({ endedReason, transcriptStructured, callKind }) {
+  if (callKind !== "interview") return null;
+  const r = String(endedReason || "").toLowerCase();
+
+  // Bot-initiated endCall covers: end-of-session close, consent decline +
+  // thanks, sustained refusal (including "don't call back"), wrong number
+  // flow, and the schedule_next_session tool's request-complete. All of
+  // these are intentional terminations — never auto-retry.
+  if (r === "assistant-ended-call") return null;
+  if (r === "assistant-ended-call-after-message-spoken") return null;
+
+  // Hard cap fired: call hit max length. Natural completion.
+  if (r.includes("exceeded-max-duration")) return null;
+
+  // Dial-time failures: participant didn't pick up. Not a drop. A
+  // separate no-answer retry strategy could cover these later.
+  if (r.includes("did-not-answer") || r.includes("no-answer")) return null;
+  if (r.includes("voicemail")) return null;
+  if (r.startsWith("customer-busy")) return null;
+  if (r.includes("invalid")) return null;
+  // Pre-connect SIP failures (outbound never reached the participant)
+  // look like "call.in-progress.error-sip-outbound-call-failed-to-connect"
+  // or similar. Treat as dial-time failure, not a drop.
+  if (r.includes("failed-to-connect")) return null;
+
+  // Customer hung up: only retry if they didn't go through normal
+  // scheduling/closing/wrong-number paths. If schedule_callback fired,
+  // they already get a follow-up via the user-initiated mechanism.
+  if (r === "customer-ended-call") {
+    const toolNames = (transcriptStructured || [])
+      .filter(m => m.role === "tool_calls")
+      .flatMap(m => (m.toolCalls || []).map(tc => tc.function && tc.function.name).filter(Boolean));
+    if (toolNames.includes("schedule_callback")) return null;
+    if (toolNames.includes("schedule_next_session")) return null;
+    if (toolNames.includes("report_wrong_number")) return null;
+    return "customer-hung-up-mid-session";
+  }
+
+  // Silence timeout mid-call: participant probably stepped away or is in
+  // a noisy environment. Auto-redial once gives a clean second chance.
+  if (r.includes("silence-timed-out")) return "silence-timed-out";
+
+  // Mid-call SIP / provider errors: legitimate drops.
+  if (r.startsWith("call.in-progress.error-")) return "carrier-drop";
+
+  return null;
+}
+
 // Assemble the transcript that the bot will see on a callback so it can
 // resume from where it left off. Concatenates the prior chain (transcripts
 // from earlier callback attempts in this same session) with the current
@@ -1079,7 +1145,7 @@ async function buildModelOverride({ isCallback, activeSession = 1, hasName = fal
 //   should be a brief callback acknowledgment ("calling you back as we
 //   arranged"), not a fresh "may I speak with..." which would imply we
 //   don't know whom we just spoke to a few minutes ago.
-function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null, includeClose = false }) {
+function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null, includeClose = false, autoRetryAfterDrop = false }) {
   // Test mode wins over every other case: regardless of hasName /
   // isCallback, we want an audibly distinctive greeting that signals
   // "this is a test call" so the operator (and any human listener)
@@ -1091,6 +1157,17 @@ function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null,
     return includeClose
       ? `Test call with close. Jumping to milestone ${testMilestones[0]}.`
       : `Test call. Jumping to milestone ${testMilestones[0]}.`;
+  }
+  // Auto-retry after an unexpected drop: explain why we're calling back
+  // (server-initiated, not because the participant asked), and immediately
+  // ask if now is still a good time so they can decline cleanly. If they
+  // say "don't call back", the bot uses endCall → server logs
+  // assistant-ended-call → shouldAutoRetryAfterDrop excludes it from
+  // further retries. Loop terminates cleanly.
+  if (autoRetryAfterDrop) {
+    return hasName
+      ? "Hi {{PARTICIPANT_NAME}} — it looks like our call dropped. I'm calling you back to continue. Is now still a good time?"
+      : "Hi — it looks like our call dropped. I'm calling you back to continue. Is now still a good time?";
   }
   if (isCallback && hasName) {
     return "Hi {{PARTICIPANT_NAME}}, this is Imani from the Clean Cooking Alliance again — I'm calling you back as we arranged.";
@@ -1130,7 +1207,7 @@ async function startVapiCall({ assistantId, customerNumber, variableValues, test
 // Longer callbacks fall through to Vapi's native schedulePlan.
 const QSTASH_CALLBACK_THRESHOLD_MINUTES = parseInt(process.env.QSTASH_CALLBACK_THRESHOLD_MINUTES || "10", 10);
 
-async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso, variableValues }) {
+async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso, variableValues, autoRetryAfterDrop = false }) {
   // Honor whatever IS_CALLBACK and ACTIVE_SESSION the caller supplied via
   // variableValues. schedule_callback passes IS_CALLBACK=true (rescheduled
   // call should brief-acknowledge); schedule_first_attempt passes
@@ -1150,16 +1227,16 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
     await qstashScheduleAt({
       url: `${RENDER_BASE_URL}/timing/fire-callback`,
       notBeforeSeconds: Math.floor(earliestMs / 1000),
-      body: { assistantId, customerNumber, variableValues, isCallback }
+      body: { assistantId, customerNumber, variableValues, isCallback, autoRetryAfterDrop }
     });
     console.log("Short-fuse callback queued via QStash", {
-      customerNumber, earliestAtIso, delayMinutes: delayMinutes.toFixed(2), isCallback, activeSession
+      customerNumber, earliestAtIso, delayMinutes: delayMinutes.toFixed(2), isCallback, activeSession, autoRetryAfterDrop
     });
     return { id: null, status: "qstash-scheduled", earliestAt: earliestAtIso };
   }
 
   // Long-fuse path: hand off to Vapi's native scheduler.
-  const firstMessage = buildFirstMessageOverride({ hasName, isCallback });
+  const firstMessage = buildFirstMessageOverride({ hasName, isCallback, autoRetryAfterDrop });
   const assistantOverrides = {
     variableValues,
     model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
@@ -2628,6 +2705,92 @@ app.post("/vapi", async (req, res) => {
         }
       }
 
+      // Auto-retry after unexpected drop. Triggered when the call ended
+      // via carrier error, mid-call silence timeout, or a customer hangup
+      // that didn't go through schedule_callback / schedule_next_session /
+      // report_wrong_number. Capped at AUTO_RETRY_CAP per (participant,
+      // session); the cap is in-memory and resets on server restart.
+      try {
+        if (customerNumber && callId && !wasScheduled(callId)) {
+          const liveVars = call?.assistantOverrides?.variableValues
+            || message?.call?.assistantOverrides?.variableValues
+            || {};
+          const retryReason = shouldAutoRetryAfterDrop({
+            endedReason,
+            transcriptStructured,
+            callKind: liveVars.CALL_KIND || "interview"
+          });
+          if (retryReason) {
+            // Look up participant for the retry-counter key.
+            const { data: p } = await supabase
+              .from("participants")
+              .select("id")
+              .eq("phone_number", customerNumber)
+              .maybeSingle();
+            if (p?.id) {
+              const sessionForKey = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
+              const key = autoRetryKey(p.id, sessionForKey);
+              const priorCount = autoRetryCountBySession.get(key) || 0;
+              if (priorCount >= AUTO_RETRY_CAP) {
+                console.log("Auto-retry capped — not retrying", {
+                  customerNumber, sessionForKey, priorCount, retryReason
+                });
+              } else {
+                autoRetryCountBySession.set(key, priorCount + 1);
+                const earliestAtIso = new Date(Date.now() + AUTO_RETRY_DELAY_SECONDS * 1000).toISOString();
+                const priorChainTranscript = liveVars.RESUMED_FROM_TRANSCRIPT || "";
+                const resumedFromTranscript = await buildResumedTranscript({
+                  currentCallId: callId,
+                  priorChainTranscript
+                });
+                const participantName = liveVars.PARTICIPANT_NAME || "";
+                const assistantIdForRetry =
+                  call?.assistantId || message?.assistant?.id || ASSISTANT_ID;
+                const scheduled = await scheduleVapiCallback({
+                  assistantId: assistantIdForRetry,
+                  customerNumber,
+                  earliestAtIso,
+                  variableValues: buildVariableValues({
+                    activeSession: sessionForKey,
+                    priorSessionsContext: liveVars.PRIOR_SESSIONS_CONTEXT || "",
+                    isCallback: true,
+                    participantName,
+                    country: inferCountryFromPhone(customerNumber),
+                    callKind: "interview",
+                    resumedFromTranscript
+                  }),
+                  autoRetryAfterDrop: true
+                });
+                markScheduled(callId);
+                console.log("Auto-retry scheduled after drop", {
+                  vapiCallId: scheduled?.id,
+                  customerNumber,
+                  sessionForKey,
+                  retryAttempt: priorCount + 1,
+                  retryReason,
+                  earliestAtIso
+                });
+                // Persist a scheduled_calls row so the operator dashboard
+                // shows the retry attempt.
+                try {
+                  await recordScheduledCall({
+                    participantId: p.id,
+                    sessionNumber: sessionForKey,
+                    scheduledAt: earliestAtIso,
+                    vapiCallId: scheduled?.id,
+                    nameAtCall: participantName
+                  });
+                } catch (e) {
+                  console.error("Auto-retry scheduled_calls persist failed:", e);
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Auto-retry handler failed:", e);
+      }
+
       return res.json({});
     }
 
@@ -2708,7 +2871,7 @@ app.post("/timing/force-close", async (req, res) => {
  */
 app.post("/timing/fire-callback", async (req, res) => {
   try {
-    const { assistantId, customerNumber, variableValues, isCallback = true } = req.body || {};
+    const { assistantId, customerNumber, variableValues, isCallback = true, autoRetryAfterDrop = false } = req.body || {};
     if (!assistantId || !customerNumber) {
       return res.status(400).json({ error: "Missing assistantId or customerNumber" });
     }
@@ -2719,7 +2882,7 @@ app.post("/timing/fire-callback", async (req, res) => {
     const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
     const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
     const callKind = variableValues?.CALL_KIND || "interview";
-    const firstMessage = buildFirstMessageOverride({ hasName, isCallback });
+    const firstMessage = buildFirstMessageOverride({ hasName, isCallback, autoRetryAfterDrop });
     const assistantOverrides = {
       variableValues,
       model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
@@ -2731,7 +2894,7 @@ app.post("/timing/fire-callback", async (req, res) => {
       customer: { number: customerNumber },
       assistantOverrides
     });
-    console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber, isCallback, activeSession });
+    console.log("Fire-callback dialed", { vapiCallId: result?.id, customerNumber, isCallback, activeSession, autoRetryAfterDrop });
     return res.json({ ok: true, vapiCallId: result?.id });
   } catch (e) {
     console.error("/timing/fire-callback error:", e);
