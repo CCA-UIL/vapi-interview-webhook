@@ -879,7 +879,7 @@ const PRESCREENING_SCHEMA = {
   required: []
 };
 
-function loadPromptForCall({ isCallback, activeSession = 1, hasName = false, consentEnabled = true, testMilestones = null, includeClose = false }) {
+function loadPromptForCall({ isCallback, activeSession = 1, hasName = false, consentEnabled = true, testMilestones = null, includeClose = false, resumedFromTranscript = "" }) {
   let prompt = fs.readFileSync(PROMPT_PATH, "utf8");
   // Regex must anchor to top-level tags (column 0). Both flow blocks
   // contain inline prose references to other flows' tag names (e.g.,
@@ -1056,6 +1056,28 @@ ${closeBlock}
     console.log("Test mode active for this call:", { milestones: testMilestones, includeClose });
   }
 
+  // Resume-from-callback strip. When the rescheduled call carries
+  // prior-call transcript content (RESUMED_FROM_TRANSCRIPT non-empty),
+  // the bot should follow <resume_from_callback> instead of the
+  // per-session callback/opening flows. Empirically the model preferred
+  // the more detailed session_1_callback_flow over the pointer in
+  // opening_flow_decision and re-read consent — so we strip the
+  // conflicting blocks server-side rather than rely on the pointer.
+  // Only applies when the standard callback flow would otherwise run
+  // (not during test mode, which has its own strip behaviour).
+  const hasResumeContent =
+    isCallback && !Array.isArray(testMilestones) &&
+    typeof resumedFromTranscript === "string" &&
+    resumedFromTranscript.trim().length > 0;
+  if (hasResumeContent) {
+    stripBlock("session_1_callback_flow", "resume mode: bot follows resume_from_callback instead");
+    stripBlock("session_2_opening_protocol", "resume mode: bot follows resume_from_callback instead");
+    stripBlock("session_3_opening_protocol", "resume mode: bot follows resume_from_callback instead");
+    console.log("Resume mode active for this call: stripped session-X opening flows", {
+      activeSession, resumedFromTranscriptLength: resumedFromTranscript.length
+    });
+  }
+
   return prompt;
 }
 
@@ -1145,13 +1167,13 @@ function loadPrescreeningPrompt({ hasName = false }) {
   return prompt;
 }
 
-async function buildModelOverride({ isCallback, activeSession = 1, hasName = false, callKind = "interview", testMilestones = null, includeClose = false }) {
+async function buildModelOverride({ isCallback, activeSession = 1, hasName = false, callKind = "interview", testMilestones = null, includeClose = false, resumedFromTranscript = "" }) {
   const template = await getModelTemplate();
   const content = callKind === "prescreening"
     ? loadPrescreeningPrompt({ hasName })
     : loadPromptForCall({
         isCallback, activeSession, hasName, consentEnabled: consentStatementEnabled(),
-        testMilestones, includeClose
+        testMilestones, includeClose, resumedFromTranscript
       });
   return {
     ...template,
@@ -1173,7 +1195,7 @@ async function buildModelOverride({ isCallback, activeSession = 1, hasName = fal
 //   should be a brief callback acknowledgment ("calling you back as we
 //   arranged"), not a fresh "may I speak with..." which would imply we
 //   don't know whom we just spoke to a few minutes ago.
-function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null, includeClose = false, autoRetryAfterDrop = false }) {
+function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null, includeClose = false, autoRetryAfterDrop = false, hasResumeContext = false }) {
   // Test mode wins over every other case: regardless of hasName /
   // isCallback, we want an audibly distinctive greeting that signals
   // "this is a test call" so the operator (and any human listener)
@@ -1197,6 +1219,18 @@ function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null,
       ? "Hi {{PARTICIPANT_NAME}} — it looks like our call dropped. I'm calling you back to continue. Is now still a good time?"
       : "Hi — it looks like our call dropped. I'm calling you back to continue. Is now still a good time?";
   }
+  // Resume callback (the participant asked us to call back mid-session
+  // and we now have their prior transcript to resume from). Use a
+  // greeting that signals "we are continuing" rather than the generic
+  // "calling you back as we arranged" — distinct context for both the
+  // participant and the model. Strip logic in loadPromptForCall removes
+  // session_X_callback_flow / opening_protocol when this is true, so
+  // the model must follow <resume_from_callback>.
+  if (isCallback && hasResumeContext) {
+    return hasName
+      ? "Hi {{PARTICIPANT_NAME}} — picking up where we left off. Is now still a good time?"
+      : "Hi — picking up where we left off. Is now still a good time?";
+  }
   if (isCallback && hasName) {
     return "Hi {{PARTICIPANT_NAME}}, this is Imani from the Clean Cooking Alliance again — I'm calling you back as we arranged.";
   }
@@ -1214,10 +1248,12 @@ async function startVapiCall({ assistantId, customerNumber, variableValues, test
   const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
   const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
   const callKind = variableValues?.CALL_KIND || "interview";
-  const firstMessage = buildFirstMessageOverride({ hasName, isCallback, testMilestones, includeClose });
+  const resumedFromTranscript = variableValues?.RESUMED_FROM_TRANSCRIPT || "";
+  const hasResumeContext = resumedFromTranscript.trim().length > 0;
+  const firstMessage = buildFirstMessageOverride({ hasName, isCallback, testMilestones, includeClose, hasResumeContext });
   const assistantOverrides = {
     variableValues,
-    model: await buildModelOverride({ isCallback, activeSession, hasName, callKind, testMilestones, includeClose })
+    model: await buildModelOverride({ isCallback, activeSession, hasName, callKind, testMilestones, includeClose, resumedFromTranscript })
   };
   if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
   return vapiPost("/call", {
@@ -1246,6 +1282,8 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
   const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
   const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
   const callKind = variableValues?.CALL_KIND || "interview";
+  const resumedFromTranscript = variableValues?.RESUMED_FROM_TRANSCRIPT || "";
+  const hasResumeContext = resumedFromTranscript.trim().length > 0;
   const earliestMs = new Date(earliestAtIso).getTime();
   const delayMinutes = (earliestMs - Date.now()) / 60000;
 
@@ -1258,16 +1296,16 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
       body: { assistantId, customerNumber, variableValues, isCallback, autoRetryAfterDrop }
     });
     console.log("Short-fuse callback queued via QStash", {
-      customerNumber, earliestAtIso, delayMinutes: delayMinutes.toFixed(2), isCallback, activeSession, autoRetryAfterDrop
+      customerNumber, earliestAtIso, delayMinutes: delayMinutes.toFixed(2), isCallback, activeSession, autoRetryAfterDrop, hasResumeContext
     });
     return { id: null, status: "qstash-scheduled", earliestAt: earliestAtIso };
   }
 
   // Long-fuse path: hand off to Vapi's native scheduler.
-  const firstMessage = buildFirstMessageOverride({ hasName, isCallback, autoRetryAfterDrop });
+  const firstMessage = buildFirstMessageOverride({ hasName, isCallback, autoRetryAfterDrop, hasResumeContext });
   const assistantOverrides = {
     variableValues,
-    model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
+    model: await buildModelOverride({ isCallback, activeSession, hasName, callKind, resumedFromTranscript })
   };
   if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
   return vapiPost("/call", {
@@ -2981,10 +3019,12 @@ app.post("/timing/fire-callback", async (req, res) => {
     const activeSession = parseInt(variableValues?.ACTIVE_SESSION || "1", 10);
     const hasName = Boolean((variableValues?.PARTICIPANT_NAME || "").trim());
     const callKind = variableValues?.CALL_KIND || "interview";
-    const firstMessage = buildFirstMessageOverride({ hasName, isCallback, autoRetryAfterDrop });
+    const resumedFromTranscript = variableValues?.RESUMED_FROM_TRANSCRIPT || "";
+    const hasResumeContext = resumedFromTranscript.trim().length > 0;
+    const firstMessage = buildFirstMessageOverride({ hasName, isCallback, autoRetryAfterDrop, hasResumeContext });
     const assistantOverrides = {
       variableValues,
-      model: await buildModelOverride({ isCallback, activeSession, hasName, callKind })
+      model: await buildModelOverride({ isCallback, activeSession, hasName, callKind, resumedFromTranscript })
     };
     if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
     const result = await vapiPost("/call", {
