@@ -19,6 +19,8 @@ In **Render dashboard → your service → Environment**, set these (mirror `.en
 | `SUPABASE_URL` | from Supabase → Project Settings → API → Project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | from Supabase → Project Settings → API → service_role secret |
 | `START_CALL_API_KEY` | A secret you generate (e.g. `openssl rand -hex 32`). Required for the `/start-call` endpoint when set. Share with operators who need to originate calls. |
+| `KROSAI_API_KEY` | from KrosAI dashboard → API Keys. Create with Calls (all) + Billing (read) permissions; do NOT grant API Keys permission. Used for inspecting CDRs on the Nigeria BYO trunk when diagnosing dial failures. |
+
 
 Render build/start commands (already in `package.json`):
 
