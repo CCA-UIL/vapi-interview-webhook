@@ -1477,6 +1477,20 @@ app.post("/start-call", async (req, res) => {
       priorSessionsContext
     });
 
+    // Operator-initiated fresh dial — this is a NEW attempt cycle for
+    // (participant, session), so reset the auto-retry counter. Without
+    // this, exhausted retries from any prior cycle (hours or days
+    // earlier) would block the new cycle's retries indefinitely until
+    // Render restarts. The counter is purely per-attempt-cycle now.
+    const retryKey = autoRetryKey(participant.id, sessionNumber);
+    if (autoRetryCountBySession.has(retryKey)) {
+      const prior = autoRetryCountBySession.get(retryKey);
+      autoRetryCountBySession.delete(retryKey);
+      console.log("Auto-retry counter reset for new attempt cycle", {
+        participantId: participant.id, sessionNumber, priorCount: prior
+      });
+    }
+
     // Use the SUBMITTED name (this call's name), not whatever happens to
     // be stored on participants.name from a prior call. A blank submission
     // means PARTICIPANT_NAME="" for this call, which skips the identity
