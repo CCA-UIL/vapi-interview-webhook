@@ -40,9 +40,10 @@ _Notes:_
 | Provider | `11labs` |
 | Voice ID | `gM1otA87NrAmOwyCoJE6` |
 | Voice model | 'Eleven_flash_v2_5' |   a bit less latency than the 11labs multilngual v2
-| Stability | `0.5` |
+| Stability | `0.75` (was `0.5`; raised for consistent tone/volume across utterances) |
 | Clarity + similarity | `0.8` |
 | Speed | `1.0` |
+| Use speaker boost | `true` (added for louder, more present voice throughout) |
 
 11labs voices
 

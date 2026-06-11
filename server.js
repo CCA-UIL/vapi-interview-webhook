@@ -1216,8 +1216,8 @@ function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null,
   // further retries. Loop terminates cleanly.
   if (autoRetryAfterDrop) {
     return hasName
-      ? "Hi {{PARTICIPANT_NAME}} — it looks like our call dropped. I'm calling you back to continue. Is now still a good time?"
-      : "Hi — it looks like our call dropped. I'm calling you back to continue. Is now still a good time?";
+      ? "Hi {{PARTICIPANT_NAME}}. It looks like our call dropped. I'm calling you back to continue. Is now still a good time?"
+      : "Hi. It looks like our call dropped. I'm calling you back to continue. Is now still a good time?";
   }
   // Resume callback (the participant asked us to call back mid-session
   // and we now have their prior transcript to resume from). Use a
@@ -1228,17 +1228,17 @@ function buildFirstMessageOverride({ hasName, isCallback, testMilestones = null,
   // the model must follow <resume_from_callback>.
   if (isCallback && hasResumeContext) {
     return hasName
-      ? "Hi {{PARTICIPANT_NAME}} — picking up where we left off. Is now still a good time?"
-      : "Hi — picking up where we left off. Is now still a good time?";
+      ? "Hi {{PARTICIPANT_NAME}}. Picking up where we left off. Is now still a good time?"
+      : "Hi. Picking up where we left off. Is now still a good time?";
   }
   if (isCallback && hasName) {
-    return "Hi {{PARTICIPANT_NAME}}, this is Imani from the Clean Cooking Alliance again — I'm calling you back as we arranged.";
+    return "Hi {{PARTICIPANT_NAME}}. This is Imani from the Clean Cooking Alliance again. I'm calling you back as we arranged.";
   }
   if (isCallback && !hasName) {
-    return "Hi, this is Imani from the Clean Cooking Alliance — I'm calling you back as we arranged.";
+    return "Hi. This is Imani from the Clean Cooking Alliance. I'm calling you back as we arranged.";
   }
   if (!hasName) {
-    return "Hello! This is Imani — a robot caller from the Clean Cooking Alliance. May I ask who I'm speaking with?";
+    return "Hello. This is Imani — a robot caller from the Clean Cooking Alliance. May I ask who I'm speaking with?";
   }
   return undefined;
 }
