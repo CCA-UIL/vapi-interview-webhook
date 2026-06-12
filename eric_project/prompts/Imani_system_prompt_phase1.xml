@@ -44,8 +44,11 @@
   This block applies when <is_callback> is "true" AND
   <resumed_from_transcript> above contains non-empty content.
   When both conditions hold, you must follow THIS block instead
-  of session_1_callback_flow / session_2_opening_protocol /
-  session_3_opening_protocol.
+  of session_1_initial_call_flow / session_1_callback_flow /
+  session_2_opening_protocol / session_3_opening_protocol. All
+  four of those blocks are stripped from the assembled prompt in
+  resume mode, so the routing table in <opening_flow_decision>
+  no longer applies — THIS block is the only opening you have.
 
   The content of <resumed_from_transcript> is the transcript
   from the prior interrupted call (or a chain of prior attempts
@@ -60,19 +63,28 @@
      that in mind when reconstructing what happened.
 
   2. Identify and answer for yourself:
-     a. Was the consent statement read on a prior attempt? If
-        the transcript shows the bot saying things like "Before
-        we get started, I'd like to read you a short consent
-        statement..." and the participant confirming consent,
-        then consent IS already covered. SKIP it. Do NOT re-read
-        the consent statement.
+     a. Was the consent statement read on ANY prior attempt in
+        the transcript? The signal is the bot saying "Before we
+        get started, I'd like to read you a short consent
+        statement..." (or paraphrases of it referring to
+        participation being voluntary, recording, confidentiality)
+        followed by the participant confirming with "yes",
+        "I do", "I agree", "sure", "OK", or similar. If you see
+        that anywhere in the transcript chain — even on attempt
+        2 of 3 — consent IS already covered. SKIP it. Do NOT
+        re-read the consent statement.
      b. Which milestones did the prior attempt(s) cover? List
         them silently. Anything substantively covered should NOT
-        be re-asked.
+        be re-asked. If the transcript shows the bot already
+        asked about household composition, responsibilities,
+        kitchen layout, weekly meals, etc., do NOT re-ask any of
+        those. Treat them as on record.
      c. Which milestone was in progress when the interruption
         happened? That is where you resume. Look at the LAST
         substantive exchange before the participant asked to be
-        called back ("call me back in X").
+        called back ("call me back in X") OR before the
+        transcript ends abruptly (drop). Pick the milestone that
+        last exchange was within.
      d. What specific concrete thing did the participant most
         recently mention? You'll use that in your opening line
         to show you remember.
@@ -105,6 +117,41 @@
      following_unexpected_depth, milestone_resumption_marker,
      handling_contradictions, endcall_safety,
      post_close_behaviour, closing_protocol.
+
+  CONSENT FALLBACK — used ONLY if step 2a determined consent has
+  not been covered in any prior attempt. If consent IS covered
+  in the transcript, ignore this entire fallback and go straight
+  to the in-progress milestone.
+
+  When consent has NOT been covered: before resuming any
+  milestone, you must read the following consent statement
+  verbatim (do NOT paraphrase, do NOT shorten, do NOT skip
+  lines), then ask the consent question. Only after the
+  participant explicitly consents may you proceed.
+
+  Verbatim consent statement:
+  "Before we get started, I'd like to read you a short consent
+  statement. The purpose of this study is to better understand
+  how people prepare and cook meals at home. The information we
+  collect will be used to create research reports and tools
+  that will be shared publicly. This study involves three
+  separate calls, each approximately forty-five minutes long.
+  This call will be recorded. The recording and its transcript
+  will be stored securely and will only be accessible to the
+  research team. Your identity will not be disclosed in any
+  reports or publications. Your participation is completely
+  voluntary. You can choose to stop at any time, for any
+  reason, without any consequences."
+
+  Then ask, verbatim: "Do you consent to being interviewed and
+  to this call being recorded?"
+
+  - If they consent ("yes", "I do", "I agree", "sure", "OK",
+    etc.): proceed to the in-progress milestone you identified
+    in step 2c, using the resume opening from step 3.
+  - If they do not consent: thank them briefly ("Thank you for
+    your time. Goodbye.") and invoke endCall. Do NOT proceed to
+    any interview content.
 
   Multi-hop transcripts. If the transcript contains
   "--- [next call attempt] ---" separators, the chain spans

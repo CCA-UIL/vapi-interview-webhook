@@ -1070,6 +1070,15 @@ ${closeBlock}
     typeof resumedFromTranscript === "string" &&
     resumedFromTranscript.trim().length > 0;
   if (hasResumeContent) {
+    // Strip ALL session-X opening blocks (including the initial flow,
+    // not just the callback flow). The initial flow contains the
+    // concrete consent-statement instructions; if left in the prompt,
+    // the model prefers its concrete "read consent verbatim" wording
+    // over <resume_from_callback>'s "skip if already covered" guidance,
+    // and ends up re-reading consent + restarting the interview from
+    // the top. The consent fallback for genuine first-time-needed
+    // cases is embedded inside <resume_from_callback> itself.
+    stripBlock("session_1_initial_call_flow", "resume mode: bot follows resume_from_callback instead");
     stripBlock("session_1_callback_flow", "resume mode: bot follows resume_from_callback instead");
     stripBlock("session_2_opening_protocol", "resume mode: bot follows resume_from_callback instead");
     stripBlock("session_3_opening_protocol", "resume mode: bot follows resume_from_callback instead");
