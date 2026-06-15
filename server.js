@@ -258,7 +258,17 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
   const nowUtc = new Date();
   const localNow = new Date(nowUtc.toLocaleString("en-US", { timeZone: timezone }));
   let targetLocal = new Date(localNow);
-  const lower = suggestedTimeText.toLowerCase();
+  // Normalize period-bearing AM/PM markers ("p.m.", "a.m.", "P.M.")
+  // BEFORE lowercasing the rest of the string so the ampm regex below
+  // can match bare \bam\b / \bpm\b. Without this, "tomorrow at 7:00
+  // p.m." matched the hm24 regex as "7:00" → 7am, dropping the PM
+  // entirely. Real production bug: call 019eb822 scheduled the
+  // callback for 6:00 UTC (7am Nigeria) instead of 18:00 UTC (7pm
+  // Nigeria), participant was asleep and the call failed with SIP 480.
+  const lower = suggestedTimeText
+    .toLowerCase()
+    .replace(/\bp\.\s*m\.?/g, "pm")
+    .replace(/\ba\.\s*m\.?/g, "am");
 
   // "Immediately" / "right now" / synonyms — treat as 1 minute. The prompt
   // is supposed to translate these to "in 1 minute" before invoking the
@@ -317,13 +327,10 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
     return { targetLocal, localNow, nowUtc };
   }
 
-  const hm24 = lower.match(/\b(at\s*)?(\d{1,2}):(\d{2})\b/);
-  if (hm24) {
-    targetLocal.setHours(parseInt(hm24[2], 10), parseInt(hm24[3], 10), 0, 0);
-    if (targetLocal.getTime() <= localNow.getTime()) targetLocal.setDate(targetLocal.getDate() + 1);
-    return { targetLocal, localNow, nowUtc };
-  }
-
+  // ampm MUST be checked BEFORE hm24. "7:00 pm" matches both regexes,
+  // but the hm24 pattern doesn't see the trailing "pm" and would
+  // interpret it as bare 24-hour 7:00 (= 7am). Check ampm first so the
+  // +12 hour shift gets applied for PM times.
   const ampm = lower.match(/\b(at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
   if (ampm) {
     let h = parseInt(ampm[2], 10);
@@ -331,6 +338,15 @@ function parseSuggestedTimeToLocalDate({ suggestedTimeText, timezone }) {
     if (ampm[4] === "pm" && h !== 12) h += 12;
     if (ampm[4] === "am" && h === 12) h = 0;
     targetLocal.setHours(h, m, 0, 0);
+    if (targetLocal.getTime() <= localNow.getTime()) targetLocal.setDate(targetLocal.getDate() + 1);
+    return { targetLocal, localNow, nowUtc };
+  }
+
+  // hm24: bare 24-hour "14:30" with no am/pm suffix. Only reached
+  // when the ampm check above failed.
+  const hm24 = lower.match(/\b(at\s*)?(\d{1,2}):(\d{2})\b/);
+  if (hm24) {
+    targetLocal.setHours(parseInt(hm24[2], 10), parseInt(hm24[3], 10), 0, 0);
     if (targetLocal.getTime() <= localNow.getTime()) targetLocal.setDate(targetLocal.getDate() + 1);
     return { targetLocal, localNow, nowUtc };
   }

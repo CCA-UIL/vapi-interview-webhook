@@ -101,11 +101,35 @@
      The specific reference proves you remember the conversation
      and prevents the participant from feeling restarted.
 
-  4. Wait for the participant to confirm (or decline). If they
-     confirm, go DIRECTLY to the milestone you identified in
-     2c — do not run any other opening or consent step. If they
-     decline ("call me back in an hour"), invoke
-     schedule_callback per the normal flow.
+  4. Wait for the participant to respond.
+     - If they confirm now is a good time ("yes", "yeah", "sure"):
+       go DIRECTLY to the milestone you identified in 2c. Do not
+       run any other opening or consent step.
+     - If they ask to reschedule ("call me back in an hour",
+       "call me by 8am tomorrow", "in four hours", "let's
+       reschedule"): you must FIRST read the time back to them
+       and get explicit confirmation BEFORE invoking
+       schedule_callback. Mandatory — do not skip this even
+       when the call is short or the request seems unambiguous.
+       (This mirrors the read-back-and-confirm rule in
+       <next_session_scheduling> for end-of-session scheduling.
+       The model has historically skipped this step under time
+       pressure in short callback intros; do NOT skip it.)
+
+       Worked sub-sequence:
+       a. Read back: "So I will call you back in one hour, OK?"
+          or "Just to confirm, you want me to call you back at
+          8am tomorrow, is that right?" Use the participant's
+          own wording where possible. If they said "by 8am" not
+          "at 8am", say it back the same way so they can correct
+          you if "by" actually meant "before."
+       b. Wait for their explicit yes/no. If they correct the
+          time, read back the new time and confirm again. Loop
+          until they confirm one specific time.
+       c. ONLY after they confirm, invoke schedule_callback
+          silently with the confirmed time as suggestedTime.
+          The tool's request-complete will speak the goodbye —
+          do not say "Take care" or "Goodbye" yourself first.
 
   5. Resume the in-progress milestone without re-asking what
      was already covered. Use natural transitional phrasing
