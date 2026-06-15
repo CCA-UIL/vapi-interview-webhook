@@ -2640,6 +2640,16 @@ app.post("/vapi", async (req, res) => {
           vapiCallId: scheduled?.id
         });
 
+        // Mark the CURRENT call as scheduled so the end-of-call-report's
+        // heuristic extract-from-transcript fallback doesn't ALSO create
+        // a callback for the same time. Without this, when the bot
+        // invokes schedule_next_session with a time like "tomorrow at
+        // 7pm", the fallback path independently finds "tomorrow at 7pm"
+        // in the transcript and schedules a duplicate Session 1
+        // callback — observed in call 019eb82a paired with 019eb829.
+        const currentCallIdForMark = message?.call?.id;
+        markScheduled(currentCallIdForMark || `${customerNumber}:${suggestedTime}`);
+
         // Persist to scheduled_calls (best-effort).
         try {
           const { data: p } = await supabase
