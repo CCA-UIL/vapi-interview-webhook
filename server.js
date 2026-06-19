@@ -571,6 +571,137 @@ function autoRetryKey(participantId, sessionNumber) {
   return `${participantId}:${sessionNumber}`;
 }
 
+// Daytime retry policy for dial-time failures where the participant was
+// NEVER reachable (busy, no-answer, voicemail). Different from mid-call
+// drops — the participant simply wasn't around. Keep trying at hourly
+// intervals during daytime only (local timezone, inferred from the
+// participant's phone country code via inferTimezone) until
+// DAYTIME_RETRY_CAP is hit. State persisted in the daytime_retries
+// Supabase table so chains survive Render restarts.
+const DAYTIME_RETRY_CAP = parseInt(process.env.DAYTIME_RETRY_CAP || "4", 10);
+const DAYTIME_RETRY_INTERVAL_MINUTES = parseInt(process.env.DAYTIME_RETRY_INTERVAL_MINUTES || "60", 10);
+const DAYTIME_WINDOW_START_HOUR = parseInt(process.env.DAYTIME_WINDOW_START_HOUR || "8", 10);
+const DAYTIME_WINDOW_END_HOUR = parseInt(process.env.DAYTIME_WINDOW_END_HOUR || "20", 10);
+
+// Compute the next dial time at least intervalMinutes from now, snapped
+// into the participant's local daytime window [START_HOUR, END_HOUR).
+// If `now + intervalMinutes` lands at night, push forward to the next
+// day's START_HOUR. Returns a Date (UTC) for scheduleVapiCallback.
+function nextDaytimeDialTime({ customerNumber, intervalMinutes }) {
+  const tz = inferTimezone(customerNumber);
+  const nowUtc = new Date();
+  const proposedUtc = new Date(nowUtc.getTime() + intervalMinutes * 60 * 1000);
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(proposedUtc).map(p => [p.type, p.value]));
+  const localHour = parseInt(parts.hour, 10) % 24;
+  if (localHour >= DAYTIME_WINDOW_START_HOUR && localHour < DAYTIME_WINDOW_END_HOUR) {
+    return proposedUtc;
+  }
+  // Outside window — push to next-day START_HOUR. If we're already past
+  // END_HOUR for today (localHour >= END), next day is +1. If we're
+  // before START today (localHour < START), today's START is fine.
+  let targetDayOffset = 0;
+  if (localHour >= DAYTIME_WINDOW_END_HOUR) targetDayOffset = 1;
+  const localProxy = new Date(proposedUtc);
+  // Use the parts we already have for date arithmetic — proposedUtc's
+  // date in the tz is parts.year/parts.month/parts.day.
+  const y = parseInt(parts.year, 10);
+  const mo = parseInt(parts.month, 10) - 1;
+  const da = parseInt(parts.day, 10) + targetDayOffset;
+  const hh = String(DAYTIME_WINDOW_START_HOUR).padStart(2, "0");
+  // Build a naive local datetime "YYYY-MM-DDTHH:00" in the tz; reuse
+  // parseLocalDatetimeInTimezone which knows how to convert local->UTC.
+  const ymd = `${y}-${String(mo + 1).padStart(2, "0")}-${String(da).padStart(2, "0")}`;
+  const naiveLocal = `${ymd}T${hh}:00`;
+  const snapped = parseLocalDatetimeInTimezone(naiveLocal, tz);
+  return snapped || proposedUtc;
+}
+
+// Decide whether a just-ended call should fire a daytime-hourly retry.
+// Returns a reason string or null. Distinct from shouldAutoRetryAfterDrop
+// — that handles mid-call drops with a 30-second quick retry. This one
+// handles dial-time unreachable failures (busy/no-answer/voicemail).
+function shouldDaytimeRetry({ endedReason, transcriptStructured, callKind }) {
+  if (callKind !== "interview") return null;
+  const r = String(endedReason || "").toLowerCase();
+  // Exclude bot-initiated terminations and bad-number cases.
+  if (r === "assistant-ended-call") return null;
+  if (r === "assistant-ended-call-after-message-spoken") return null;
+  if (r.includes("invalid")) return null;
+  // Mid-call drops have a participant user-turn in the transcript;
+  // shouldAutoRetryAfterDrop handles those. We only fire when the
+  // participant was never on the line at all.
+  const hadParticipantOnLine =
+    Array.isArray(transcriptStructured) &&
+    transcriptStructured.some(m => m.role === "user");
+  if (hadParticipantOnLine) return null;
+  if (r.includes("did-not-answer") || r.includes("no-answer")) return "no-answer";
+  if (r.includes("voicemail")) return "voicemail";
+  if (r.startsWith("customer-busy")) return "busy";
+  return null;
+}
+
+// Supabase-persisted daytime retry counter. Survives Render restarts so
+// the chain isn't broken by a redeploy.
+async function getDaytimeRetryState({ participantId, sessionNumber }) {
+  const { data, error } = await supabase
+    .from("daytime_retries")
+    .select("attempts, last_attempt_at, declined")
+    .eq("participant_id", participantId)
+    .eq("session_number", sessionNumber)
+    .maybeSingle();
+  if (error) {
+    console.warn("getDaytimeRetryState failed:", error.message);
+    return { attempts: 0, declined: false };
+  }
+  return data || { attempts: 0, declined: false };
+}
+
+async function incrementDaytimeRetryCount({ participantId, sessionNumber }) {
+  const current = await getDaytimeRetryState({ participantId, sessionNumber });
+  const attempts = (current.attempts || 0) + 1;
+  const { error } = await supabase
+    .from("daytime_retries")
+    .upsert({
+      participant_id: participantId,
+      session_number: sessionNumber,
+      attempts,
+      last_attempt_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }, { onConflict: "participant_id,session_number" });
+  if (error) console.warn("incrementDaytimeRetryCount failed:", error.message);
+  return attempts;
+}
+
+async function resetDaytimeRetryCount({ participantId, sessionNumber }) {
+  const { error } = await supabase
+    .from("daytime_retries")
+    .delete()
+    .eq("participant_id", participantId)
+    .eq("session_number", sessionNumber);
+  if (error) console.warn("resetDaytimeRetryCount failed:", error.message);
+}
+
+// Stop a daytime-retry chain because the participant explicitly declined.
+// Called when the bot's endCall fires after a callback is refused —
+// the next dial-time failure for the same (participant, session) won't
+// kick off another retry chain.
+async function markDaytimeRetryDeclined({ participantId, sessionNumber }) {
+  const { error } = await supabase
+    .from("daytime_retries")
+    .upsert({
+      participant_id: participantId,
+      session_number: sessionNumber,
+      declined: true,
+      updated_at: new Date().toISOString()
+    }, { onConflict: "participant_id,session_number" });
+  if (error) console.warn("markDaytimeRetryDeclined failed:", error.message);
+}
+
 // Pending schedule_callback intents, keyed by the current Vapi call ID.
 // schedule_callback fires MID-CALL, but Vapi's artifact.transcript isn't
 // populated until the call ends. To pass a complete prior-call transcript
@@ -1661,6 +1792,15 @@ app.post("/start-call", async (req, res) => {
         participantId: participant.id, sessionNumber, priorCount: prior
       });
     }
+
+    // Same logic for the persistent daytime-retry counter. Operator
+    // re-dial means "start a fresh attempt budget" — clear any prior
+    // chain state for this (participant, session) so a new sequence
+    // of busy/no-answer failures gets the full DAYTIME_RETRY_CAP again.
+    await resetDaytimeRetryCount({
+      participantId: participant.id,
+      sessionNumber
+    });
 
     // Use the SUBMITTED name (this call's name), not whatever happens to
     // be stored on participants.name from a prior call. A blank submission
@@ -3144,6 +3284,149 @@ app.post("/vapi", async (req, res) => {
         }
       } catch (e) {
         console.error("Auto-retry handler failed:", e);
+      }
+
+      // If the participant came on the line and the bot ended the call
+      // (assistant-ended-call, NOT the *-after-message-spoken variant
+      // which means a scheduling tool fired), treat it as an explicit
+      // decline and mark the daytime-retry chain as declined. Prevents
+      // any stale future-scheduled callback that fails later from
+      // restarting a retry chain for the same (participant, session).
+      // Operator re-dial via /start-call clears this flag.
+      try {
+        if (customerNumber && callId) {
+          const r = String(endedReason || "").toLowerCase();
+          const hadParticipantOnLine =
+            Array.isArray(transcriptStructured) &&
+            transcriptStructured.some(m => m.role === "user");
+          if (r === "assistant-ended-call" && hadParticipantOnLine) {
+            const liveVars = call?.assistantOverrides?.variableValues
+              || message?.call?.assistantOverrides?.variableValues
+              || {};
+            if ((liveVars.CALL_KIND || "interview") === "interview") {
+              const { data: p } = await supabase
+                .from("participants")
+                .select("id")
+                .eq("phone_number", customerNumber)
+                .maybeSingle();
+              if (p?.id) {
+                const sessionForKey = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
+                await markDaytimeRetryDeclined({
+                  participantId: p.id,
+                  sessionNumber: sessionForKey
+                });
+                console.log("Daytime retry chain marked declined", {
+                  customerNumber, sessionForKey
+                });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("markDaytimeRetryDeclined check failed:", e);
+      }
+
+      // Daytime hourly retry for dial-time failures (busy / no-answer /
+      // voicemail). Different from the auto-retry block above — that
+      // handles mid-call drops with a 30-second quick retry. This one
+      // covers the case where the participant was never on the line at
+      // all: keep trying at hourly intervals during their local daytime
+      // window until DAYTIME_RETRY_CAP is hit. State persists in the
+      // daytime_retries Supabase table so Render restarts don't break
+      // the chain.
+      try {
+        if (customerNumber && callId && !wasScheduled(callId)) {
+          const liveVars = call?.assistantOverrides?.variableValues
+            || message?.call?.assistantOverrides?.variableValues
+            || {};
+          const daytimeRetryReason = shouldDaytimeRetry({
+            endedReason,
+            transcriptStructured,
+            callKind: liveVars.CALL_KIND || "interview"
+          });
+          if (daytimeRetryReason) {
+            const { data: p } = await supabase
+              .from("participants")
+              .select("id")
+              .eq("phone_number", customerNumber)
+              .maybeSingle();
+            if (p?.id) {
+              const sessionForKey = parseInt(liveVars.ACTIVE_SESSION || "1", 10);
+              const state = await getDaytimeRetryState({
+                participantId: p.id,
+                sessionNumber: sessionForKey
+              });
+              if (state.declined) {
+                console.log("Daytime retry skipped — participant previously declined", {
+                  customerNumber, sessionForKey, daytimeRetryReason
+                });
+              } else if ((state.attempts || 0) >= DAYTIME_RETRY_CAP) {
+                console.log("Daytime retry cap reached — manual intervention required", {
+                  customerNumber, sessionForKey,
+                  attempts: state.attempts, cap: DAYTIME_RETRY_CAP,
+                  daytimeRetryReason
+                });
+              } else {
+                const earliestAt = nextDaytimeDialTime({
+                  customerNumber,
+                  intervalMinutes: DAYTIME_RETRY_INTERVAL_MINUTES
+                });
+                const earliestAtIso = earliestAt.toISOString();
+                const attemptNumber = await incrementDaytimeRetryCount({
+                  participantId: p.id,
+                  sessionNumber: sessionForKey
+                });
+                const participantName = liveVars.PARTICIPANT_NAME || "";
+                const assistantIdForRetry =
+                  call?.assistantId || message?.assistant?.id || ASSISTANT_ID;
+                // Participant was never on the line. Retry must look
+                // like a fresh attempt — preserve the ORIGINAL
+                // IS_CALLBACK (initial dial vs prior scheduled
+                // callback), use the original greeting (no "our call
+                // dropped" line), and carry forward whatever prior
+                // chain came with this attempt.
+                const scheduled = await scheduleVapiCallback({
+                  assistantId: assistantIdForRetry,
+                  customerNumber,
+                  earliestAtIso,
+                  variableValues: buildVariableValues({
+                    activeSession: sessionForKey,
+                    priorSessionsContext: liveVars.PRIOR_SESSIONS_CONTEXT || "",
+                    isCallback: liveVars.IS_CALLBACK === "true",
+                    participantName,
+                    country: inferCountryFromPhone(customerNumber),
+                    callKind: "interview",
+                    resumedFromTranscript: liveVars.RESUMED_FROM_TRANSCRIPT || ""
+                  }),
+                  autoRetryAfterDrop: false
+                });
+                markScheduled(callId);
+                console.log("Daytime retry scheduled", {
+                  vapiCallId: scheduled?.id,
+                  customerNumber,
+                  sessionForKey,
+                  attemptNumber,
+                  cap: DAYTIME_RETRY_CAP,
+                  daytimeRetryReason,
+                  earliestAtIso
+                });
+                try {
+                  await recordScheduledCall({
+                    participantId: p.id,
+                    sessionNumber: sessionForKey,
+                    scheduledAt: earliestAtIso,
+                    vapiCallId: scheduled?.id,
+                    nameAtCall: participantName
+                  });
+                } catch (e) {
+                  console.error("Daytime-retry scheduled_calls persist failed:", e);
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Daytime-retry handler failed:", e);
       }
 
       return res.json({});
