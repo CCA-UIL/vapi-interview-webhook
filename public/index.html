@@ -420,6 +420,7 @@
       tr.dataset.kind = 'draft';
       tr.dataset.id = d.id;
       const testFlagged = (d.testMilestones || '').trim() ? 'test-mode-flagged' : '';
+      const sessionVal = String(d.sessionNumber || 1);
       tr.innerHTML = `
         <td class="select"><input type="checkbox" class="row-select"></td>
         <td><input type="tel" class="f-phone" placeholder="+2348037642802" value="${d.phone || ''}"></td>
@@ -428,7 +429,16 @@
         <td><input type="text" class="f-test ${testFlagged}" placeholder="blank = normal" value="${d.testMilestones || ''}"></td>
         <td class="read-only"></td>
         <td class="read-only"></td>
-        <td class="read-only">1</td>
+        <td>
+          <select class="f-session" title="Which session to dial. Sessions 2/3 require the prior session(s) to have stored summaries; otherwise the server blocks the dial and the override checkbox below appears.">
+            <option value="1"${sessionVal === '1' ? ' selected' : ''}>1</option>
+            <option value="2"${sessionVal === '2' ? ' selected' : ''}>2</option>
+            <option value="3"${sessionVal === '3' ? ' selected' : ''}>3</option>
+          </select>
+          <label class="f-override-label" style="display:none;font-size:0.75rem;color:#991b1b;margin-top:0.25rem;">
+            <input type="checkbox" class="f-override-missing"> Dial anyway (no prior context)
+          </label>
+        </td>
         <td class="read-only">${badgeFor('draft')}</td>
         <td class="notes"></td>
         <td>
@@ -447,6 +457,9 @@
         // Live visual: highlight the field whenever it has content.
         e.target.classList.toggle('test-mode-flagged', e.target.value.trim().length > 0);
       });
+      tr.querySelector('.f-session').addEventListener('change', e =>
+        updateDraft(d.id, 'sessionNumber', parseInt(e.target.value, 10))
+      );
       tr.querySelector('button.call').addEventListener('click', () => submitDraft(tr, d.id));
       tr.querySelector('button.delete').addEventListener('click', () => deleteDraft(d.id));
       tr.querySelector('.row-select').addEventListener('change', onRowSelectChange);
@@ -517,7 +530,7 @@
     }
     function addDraft() {
       const drafts = loadDrafts();
-      drafts.push({ id: newDraftId(), phone: '', name: '', scheduledAtLocal: '', testMilestones: '' });
+      drafts.push({ id: newDraftId(), phone: '', name: '', scheduledAtLocal: '', testMilestones: '', sessionNumber: 1 });
       saveDrafts(drafts);
       refresh();
     }
@@ -528,6 +541,9 @@
       const name = tr.querySelector('.f-name').value.trim();
       const scheduledAtLocal = tr.querySelector('.f-schedule').value.trim();
       const testMilestones = tr.querySelector('.f-test').value.trim();
+      const sessionNumber = parseInt(tr.querySelector('.f-session').value, 10) || 1;
+      const overrideEl = tr.querySelector('.f-override-missing');
+      const acknowledgeMissingPriorContext = !!(overrideEl && overrideEl.checked);
       const apikey = apikeyEl.value.trim();
       const callBtn = tr.querySelector('button.call');
       const deleteBtn = tr.querySelector('button.delete');
@@ -574,13 +590,27 @@
           body: JSON.stringify({
             customerNumber: phone,
             name: name || undefined,
+            sessionNumber,
             scheduledAtLocal: scheduledAtLocal || undefined,
-            testMilestones: testMilestones || undefined
+            testMilestones: testMilestones || undefined,
+            acknowledgeMissingPriorContext
           })
         });
         const data = await resp.json();
         if (resp.status === 401) {
           setStatus('err', 'Unauthorized — check the API key.');
+          callBtn.disabled = false; deleteBtn.disabled = false; return;
+        }
+        // 409 missing prior context: surface the override checkbox so the
+        // operator can either run the prior session first or explicitly
+        // acknowledge they want to dial anyway (with empty/partial context).
+        if (resp.status === 409 && data.error === 'missing_prior_context') {
+          const overrideLabel = tr.querySelector('.f-override-label');
+          if (overrideLabel) overrideLabel.style.display = 'block';
+          setStatus('err',
+            (data.message || 'Prior session summaries missing.') +
+            ' Check "Dial anyway (no prior context)" and click Call again to proceed.'
+          );
           callBtn.disabled = false; deleteBtn.disabled = false; return;
         }
         if (!resp.ok || !data.ok) {
@@ -589,10 +619,13 @@
         }
         // Success — drop the draft and refresh.
         deleteDraft(id);
+        const warningSuffix = (data.priorContextWarnings && data.priorContextWarnings.length > 0)
+          ? ` (with warnings: ${data.priorContextWarnings.join('; ')})`
+          : '';
         if (data.scheduledAt) {
-          setStatus('ok', `Scheduled for ${formatWhen(data.scheduledAt)}.`);
+          setStatus('ok', `Scheduled for ${formatWhen(data.scheduledAt)}.${warningSuffix}`);
         } else {
-          setStatus('ok', `Call queued. The phone will ring within ~30 seconds.`);
+          setStatus('ok', `Call queued. The phone will ring within ~30 seconds.${warningSuffix}`);
         }
       } catch (err) {
         setStatus('err', 'Network error: ' + err.message);
@@ -981,7 +1014,7 @@
 
     function sendToInterviewTab(r) {
       const drafts = loadDrafts();
-      drafts.push({ id: newDraftId(), phone: r.phoneNumber || '', name: r.name || '', scheduledAtLocal: '', testMilestones: '' });
+      drafts.push({ id: newDraftId(), phone: r.phoneNumber || '', name: r.name || '', scheduledAtLocal: '', testMilestones: '', sessionNumber: 1 });
       saveDrafts(drafts);
       switchTab('interview');
       refresh();

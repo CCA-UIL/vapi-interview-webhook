@@ -484,6 +484,57 @@ async function recordScheduledCall({ participantId, sessionNumber, scheduledAt, 
   if (error) console.error("recordScheduledCall failed:", error.message);
 }
 
+// Fetch summaries for all prior completed sessions of a participant and
+// assemble them into the prose blob that the prompt's
+// <prior_sessions_context> block expects (with "From the first
+// conversation:" / "From the second conversation:" section headers). For
+// Session 1 dials returns empty context (no prior sessions). For Session
+// 2/3 dials, surfaces a `missing` array listing prior session_numbers
+// that have no stored summary — caller uses that to enforce the
+// block-on-missing-summary policy at /start-call.
+async function loadPriorSessionsContext({ participantId, sessionNumber }) {
+  if (!participantId || sessionNumber < 2) {
+    return { context: "", warnings: [], missing: [] };
+  }
+  const priorSessionNumbers = [];
+  for (let n = 1; n < sessionNumber; n++) priorSessionNumbers.push(n);
+
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("session_number, summary, status, completed_at")
+    .eq("participant_id", participantId)
+    .in("session_number", priorSessionNumbers);
+  if (error) {
+    console.warn("loadPriorSessionsContext: query failed", { error: error.message });
+    return { context: "", warnings: [`Failed to load prior sessions: ${error.message}`], missing: priorSessionNumbers };
+  }
+
+  const byNum = Object.fromEntries((data || []).map(r => [r.session_number, r]));
+  const orderedHeaders = {
+    1: "From the first conversation:",
+    2: "From the second conversation:"
+  };
+  const parts = [];
+  const warnings = [];
+  const missing = [];
+  for (const n of priorSessionNumbers) {
+    const row = byNum[n];
+    if (!row || !row.summary || !row.summary.trim()) {
+      warnings.push(`Session ${n} has no stored summary (status=${row?.status || "no row"}).`);
+      missing.push(n);
+      continue;
+    }
+    parts.push(`${orderedHeaders[n]}\n${row.summary.trim()}`);
+  }
+  const context = parts.join("\n\n");
+  if (context.length > 20000) {
+    console.warn("loadPriorSessionsContext: context unusually long", {
+      participantId, sessionNumber, contextLength: context.length
+    });
+  }
+  return { context, warnings, missing };
+}
+
 // Fetch a Vapi call's transcript-so-far via the API. Safe to call while the
 // call is still in progress — Vapi returns the transcript accumulated up to
 // the moment of the GET. Returns "" on any failure (network, 404, missing
@@ -841,6 +892,29 @@ const PRESCREENING_PROMPT_PATH = path.join(
   "prompts",
   "prescreening_prompt.xml"
 );
+
+// Vapi analysisPlan.summaryPlan settings for interview calls. Generates
+// the prose summary that gets persisted to sessions.summary and reused
+// as PRIOR_SESSIONS_CONTEXT for the participant's next session. The
+// system prompt forces UPPERCASE section headers (HOUSEHOLD AND
+// ENVIRONMENT:, COOKING RHYTHM:, etc.) so the prompt's
+// <prior_sessions_context> block reads back consistently across
+// participants. Word range keeps it dense without truncating
+// cross-session bridges; the bot reads this on Session 2/3 opens.
+const INTERVIEW_SUMMARY_PLAN = {
+  enabled: true,
+  messages: [
+    {
+      role: "system",
+      content: "You are a research assistant summarising an ethnographic interview transcript for the same interviewer who will conduct the participant's NEXT session days later. Write in plain prose using SECTION HEADERS IN UPPERCASE (e.g., \"HOUSEHOLD AND ENVIRONMENT:\", \"COOKING RHYTHM AND DECISIONS:\", \"COOKING IDENTITY AND LEARNING:\", \"GENDER ROLES AND SOCIAL EXPECTATIONS:\", \"ELECTRIC PRESSURE COOKER USE:\", \"KEY THEMES:\"). Match these section conventions if the topics arose; omit sections that did not. Capture concrete details: household composition, kitchens, appliances, named dishes, named people, decisions, costs, and any phrases the participant said verbatim that carry distinctive language. Use the participant's own words where they used distinctive language. Length: 1500-2500 words. Do not invent details. Do not add greetings, sign-offs, or meta-commentary. Output the prose only."
+    },
+    {
+      role: "user",
+      content: "Transcript:\n\n{{transcript}}"
+    }
+  ],
+  timeoutSeconds: 60
+};
 
 // JSON schema used by Vapi's analysisPlan.structuredDataPlan to extract
 // structured data from the prescreening transcript at end-of-call.
@@ -1281,6 +1355,11 @@ async function startVapiCall({ assistantId, customerNumber, variableValues, test
     model: await buildModelOverride({ isCallback, activeSession, hasName, callKind, testMilestones, includeClose, resumedFromTranscript })
   };
   if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
+  // Interview calls get the summaryPlan; prescreening calls don't run
+  // through this path (they have their own analysisPlan with structuredDataPlan).
+  if (callKind === "interview") {
+    assistantOverrides.analysisPlan = { summaryPlan: INTERVIEW_SUMMARY_PLAN };
+  }
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: getPhoneNumberId(customerNumber),
@@ -1333,6 +1412,9 @@ async function scheduleVapiCallback({ assistantId, customerNumber, earliestAtIso
     model: await buildModelOverride({ isCallback, activeSession, hasName, callKind, resumedFromTranscript })
   };
   if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
+  if (callKind === "interview") {
+    assistantOverrides.analysisPlan = { summaryPlan: INTERVIEW_SUMMARY_PLAN };
+  }
   return vapiPost("/call", {
     assistantId,
     phoneNumberId: getPhoneNumberId(customerNumber),
@@ -1472,7 +1554,12 @@ app.post("/start-call", async (req, res) => {
       customerNumber,
       name,
       sessionNumber = 1,
-      priorSessionsContext = "",
+      // Optional EXPLICIT override of the prior-sessions context. If
+      // omitted, the server auto-computes from sessions.summary rows for
+      // this participant. Pass a non-empty string to inject a
+      // hand-written summary instead (useful for backfilling sessions
+      // run before the auto-summary feature shipped).
+      priorSessionsContext: priorSessionsContextOverride,
       assistantId,
       // Optional naive local datetime string ("YYYY-MM-DDTHH:MM") from the
       // operator UI's <input type="datetime-local">. If present, the call is
@@ -1483,7 +1570,13 @@ app.post("/start-call", async (req, res) => {
       // call. "1.3,2.1" → strip intro/consent/closing, strip non-selected
       // milestones, jump straight to first selected milestone with an
       // audibly distinctive test-mode greeting. See parseTestMilestones.
-      testMilestones: testMilestonesRaw
+      testMilestones: testMilestonesRaw,
+      // When sessionNumber > 1 and any prior session lacks a stored
+      // summary, /start-call returns 409 by default. Setting this flag
+      // to true (via the dashboard's "Dial anyway" checkbox or an
+      // explicit API call) bypasses the block; the dial proceeds with
+      // whatever partial context exists (possibly empty).
+      acknowledgeMissingPriorContext = false
     } = req.body || {};
 
     if (!customerNumber) return res.status(400).json({ error: "Missing customerNumber" });
@@ -1496,11 +1589,64 @@ app.post("/start-call", async (req, res) => {
     const includeClose = tm ? tm.includeClose : false;
 
     const participant = await upsertParticipant({ phoneNumber: customerNumber, name });
+
+    // Auto-load prior session summaries when dialing Session 2/3. The
+    // explicit priorSessionsContext body field (if non-empty) wins —
+    // preserves the curl-based backfill workflow for sessions that
+    // pre-date the auto-summary feature. Otherwise the server fetches
+    // sessions.summary for all prior session_numbers and assembles the
+    // prose blob the prompt's <prior_sessions_context> expects.
+    let computedPriorContext = "";
+    let priorContextWarnings = [];
+    let priorContextMissing = [];
+    const explicitOverrideContext = (priorSessionsContextOverride || "").trim();
+    if (explicitOverrideContext) {
+      computedPriorContext = explicitOverrideContext;
+    } else {
+      const loaded = await loadPriorSessionsContext({
+        participantId: participant.id,
+        sessionNumber
+      });
+      computedPriorContext = loaded.context;
+      priorContextWarnings = loaded.warnings;
+      priorContextMissing = loaded.missing;
+    }
+
+    // Block on missing prior context for non-Session-1 dials. Operator
+    // must explicitly acknowledge (via dashboard checkbox or
+    // acknowledgeMissingPriorContext:true in the body) before the dial
+    // fires. Prevents accidentally dialing Session 2/3 with empty or
+    // partial context, which produces a confused bot opening.
+    if (
+      sessionNumber > 1
+      && priorContextMissing.length > 0
+      && !acknowledgeMissingPriorContext
+      && !explicitOverrideContext
+    ) {
+      return res.status(409).json({
+        ok: false,
+        error: "missing_prior_context",
+        sessionNumber,
+        missing: priorContextMissing,
+        warnings: priorContextWarnings,
+        message: `Cannot dial Session ${sessionNumber}: prior session(s) ${priorContextMissing.join(", ")} have no stored summary. Either run those sessions first, or check "Dial anyway without prior context" to proceed with empty/partial context.`
+      });
+    }
+
     const session = await createSessionRow({
       participantId: participant.id,
       sessionNumber,
-      priorSessionsContext
+      priorSessionsContext: computedPriorContext
     });
+
+    if (priorContextWarnings.length > 0) {
+      console.warn("Prior sessions context warnings", {
+        participantId: participant.id, sessionNumber,
+        contextLength: computedPriorContext.length,
+        warnings: priorContextWarnings,
+        acknowledged: acknowledgeMissingPriorContext
+      });
+    }
 
     // Operator-initiated fresh dial — this is a NEW attempt cycle for
     // (participant, session), so reset the auto-retry counter. Without
@@ -1524,7 +1670,7 @@ app.post("/start-call", async (req, res) => {
 
     const variableValues = buildVariableValues({
       activeSession: sessionNumber,
-      priorSessionsContext,
+      priorSessionsContext: computedPriorContext,
       isCallback: false,
       participantName: submittedName,
       country: inferCountryFromPhone(customerNumber)
@@ -1554,7 +1700,8 @@ app.post("/start-call", async (req, res) => {
       const firstMessage = buildFirstMessageOverride({ hasName, isCallback: false, testMilestones, includeClose });
       const overrides = {
         variableValues,
-        model: await buildModelOverride({ isCallback: false, activeSession: sessionNumber, hasName, testMilestones, includeClose })
+        model: await buildModelOverride({ isCallback: false, activeSession: sessionNumber, hasName, testMilestones, includeClose }),
+        analysisPlan: { summaryPlan: INTERVIEW_SUMMARY_PLAN }
       };
       if (firstMessage !== undefined) overrides.firstMessage = firstMessage;
       const result = await vapiPost("/call", {
@@ -1612,7 +1759,10 @@ app.post("/start-call", async (req, res) => {
       sessionId: session.id,
       participantId: participant.id,
       status: vapiStatus,
-      scheduledAt: scheduledUtcIso
+      scheduledAt: scheduledUtcIso,
+      priorContextLength: computedPriorContext.length,
+      priorContextWarnings,
+      acknowledgedMissingPriorContext: acknowledgeMissingPriorContext === true
     });
   } catch (err) {
     console.error("start-call error:", err);
@@ -2620,7 +2770,8 @@ app.post("/vapi", async (req, res) => {
           const firstMessage = buildFirstMessageOverride({ hasName, isCallback: false });
           const assistantOverrides = {
             variableValues: nextSessionVars,
-            model: await buildModelOverride({ isCallback: false, activeSession: nextSession })
+            model: await buildModelOverride({ isCallback: false, activeSession: nextSession }),
+            analysisPlan: { summaryPlan: INTERVIEW_SUMMARY_PLAN }
           };
           if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
           scheduled = await vapiPost("/call", {
@@ -2724,19 +2875,37 @@ app.post("/vapi", async (req, res) => {
           .eq("call_id", callId)
           .maybeSingle();
         const toolSetTerminals = new Set(["wrong_number", "rescheduled_unreached"]);
+        // Pull Vapi's auto-generated summary (from analysisPlan.summaryPlan
+        // attached to the call's assistantOverrides). Persisted alongside
+        // transcript so the participant's NEXT session can load it as
+        // PRIOR_SESSIONS_CONTEXT via loadPriorSessionsContext. May be
+        // null if extraction failed or timed out; that's handled by the
+        // block-on-missing-summary check in /start-call.
+        const analysisSummary =
+          message?.analysis?.summary
+          || call?.analysis?.summary
+          || message?.call?.analysis?.summary
+          || null;
         let finalStatus;
         if (existing && toolSetTerminals.has(existing.status)) {
           finalStatus = existing.status;
           await updateSessionByCallId(callId, {
             completed_at: new Date().toISOString(),
-            transcript: transcriptStructured || (transcript ? { plain: transcript } : null)
+            transcript: transcriptStructured || (transcript ? { plain: transcript } : null),
+            summary: analysisSummary
           });
         } else {
           finalStatus = mapEndedReasonToStatus(endedReason);
           await updateSessionByCallId(callId, {
             status: finalStatus,
             completed_at: new Date().toISOString(),
-            transcript: transcriptStructured || (transcript ? { plain: transcript } : null)
+            transcript: transcriptStructured || (transcript ? { plain: transcript } : null),
+            summary: analysisSummary
+          });
+        }
+        if (analysisSummary) {
+          console.log("Session summary persisted", {
+            callId, summaryLength: analysisSummary.length
           });
         }
         // Mirror the final status onto the matching scheduled_calls row so
@@ -3075,6 +3244,9 @@ app.post("/timing/fire-callback", async (req, res) => {
       variableValues,
       model: await buildModelOverride({ isCallback, activeSession, hasName, callKind, resumedFromTranscript })
     };
+    if (callKind === "interview") {
+      assistantOverrides.analysisPlan = { summaryPlan: INTERVIEW_SUMMARY_PLAN };
+    }
     if (firstMessage !== undefined) assistantOverrides.firstMessage = firstMessage;
     const result = await vapiPost("/call", {
       assistantId,
