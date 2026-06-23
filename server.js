@@ -1882,12 +1882,30 @@ app.get("/transcripts/recent", async (req, res) => {
       const body = await listResp.text().catch(() => "");
       return res.status(502).send(`ERROR: Vapi API error — ${listResp.status} ${body.slice(0, 200)}\n`);
     }
-    const calls = await listResp.json();
-    if (!Array.isArray(calls) || calls.length === 0) {
+    const slimCalls = await listResp.json();
+    if (!Array.isArray(slimCalls) || slimCalls.length === 0) {
       return res.send(`RECENT CALLS — 0 results\n\nNo calls found.\n`);
     }
 
-    const sections = calls.map((call, i) => {
+    // Vapi's list response is a slim view — no artifact, no startedAt/
+    // endedAt. To get transcripts and durations we have to hydrate each
+    // call via GET /call/:id. Run them in parallel since they're
+    // independent. A single failed hydration falls back to the slim
+    // record (which will render TRANSCRIPT: NOT_AVAILABLE) rather than
+    // failing the whole batch.
+    const hydrated = await Promise.all(slimCalls.map(async (slim) => {
+      try {
+        const r = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(slim.id)}`, {
+          headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
+        });
+        if (!r.ok) return slim;
+        return await r.json();
+      } catch {
+        return slim;
+      }
+    }));
+
+    const sections = hydrated.map((call, i) => {
       const body = formatCallAsPlainText(call);
       return `CALL ${i + 1}\n${body}`;
     });
