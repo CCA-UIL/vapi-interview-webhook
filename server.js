@@ -1846,11 +1846,12 @@ app.get("/transcripts/recent", async (req, res) => {
     const requested = parseInt(req.query.n, 10);
     const n = Math.max(1, Math.min(10, isNaN(requested) ? 5 : requested));
 
-    // Vapi's list endpoint returns calls newest-first by default; we
-    // also pass sortOrder=desc explicitly for clarity. The list payload
-    // includes artifact.transcript on completed calls.
+    // Vapi's list endpoint returns calls newest-first by default. No
+    // sortOrder param exists (passing one returns 400 "property
+    // sortOrder should not exist"). The list payload includes
+    // artifact.transcript on completed calls.
     const listResp = await fetch(
-      `https://api.vapi.ai/call?limit=${n}&sortOrder=desc`,
+      `https://api.vapi.ai/call?limit=${n}`,
       { headers: { Authorization: `Bearer ${VAPI_API_KEY}` } }
     );
     if (!listResp.ok) {
