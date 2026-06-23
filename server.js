@@ -38,6 +38,15 @@ if (!START_CALL_API_KEY) {
   console.warn("WARNING: START_CALL_API_KEY not set — /start-call is UNAUTHENTICATED. Anyone with the URL can trigger calls and burn Vapi credits.");
 }
 
+// Optional shared token for the read-only transcript proxy endpoints
+// (/transcript/:callId, /transcripts/recent). Used by Claude's
+// web_fetch tool, which can't pass arbitrary auth headers — so the
+// gate is a query param (?token=...). If unset, the endpoints are
+// open (acceptable because they only expose data already accessible
+// via the Vapi dashboard with the API key, but the URL isn't
+// publicly advertised).
+const TRANSCRIPT_PROXY_TOKEN = process.env.TRANSCRIPT_PROXY_TOKEN;
+
 const requiredEnv = {
   VAPI_API_KEY,
   ASSISTANT_ID,
@@ -1663,6 +1672,207 @@ function buildVariableValues({ activeSession, priorSessionsContext, isCallback, 
  */
 app.get("/healthz", (req, res) => {
   res.json({ ok: true, uptimeSeconds: Math.round(process.uptime()) });
+});
+
+// ---------------------------------------------------------------------------
+// Transcript proxy endpoints — read-only plain-text views of Vapi calls,
+// designed to be consumed by Claude's web_fetch tool.
+//
+// Auth: optional shared token via ?token=... query param, enforced only
+// when TRANSCRIPT_PROXY_TOKEN env var is set. web_fetch can't send
+// arbitrary headers, so the token has to live in the URL.
+//
+// Output: text/plain, fixed format documented per endpoint. NOT JSON —
+// the consumer is an LLM, not a parser.
+//
+// NOTE on transcript chronology: Vapi's `artifact.transcript` (string)
+// and `artifact.messages` (array) are both ROLLED UP BY ROLE, not
+// chronological. The output here preserves that ordering as-is — for
+// strict turn-by-turn audio order, listen to artifact.recordingUrl
+// instead. Documented in CLAUDE.md under "Iteration History".
+// ---------------------------------------------------------------------------
+
+function transcriptProxyAuthFails(req) {
+  if (!TRANSCRIPT_PROXY_TOKEN) return false;
+  return (req.query.token || "") !== TRANSCRIPT_PROXY_TOKEN;
+}
+
+// Vapi's transcript string uses "AI:" / "User:" line prefixes. Rewrite
+// those to BOT: / PARTICIPANT: per the proxy's contract. Only matches
+// the prefix at the start of a line followed by ":" — won't rewrite
+// occurrences of "AI" or "User" mid-sentence.
+function normalizeSpeakerLabels(transcriptStr) {
+  if (!transcriptStr) return "";
+  return transcriptStr
+    .replace(/^AI:\s*/gm, "BOT: ")
+    .replace(/^Bot:\s*/gm, "BOT: ")
+    .replace(/^Assistant:\s*/gm, "BOT: ")
+    .replace(/^User:\s*/gm, "PARTICIPANT: ")
+    .replace(/^Human:\s*/gm, "PARTICIPANT: ");
+}
+
+// Fallback: assemble a transcript from artifact.messages when the
+// `transcript` string is null (early in a call's life, before Vapi has
+// rendered it). Drops system/tool entries since the proxy contract is
+// BOT/PARTICIPANT only.
+function assembleTranscriptFromMessages(messages) {
+  if (!Array.isArray(messages)) return "";
+  const out = [];
+  for (const m of messages) {
+    const role = String(m.role || "").toLowerCase();
+    const text = (m.message || m.content || "").trim();
+    if (!text) continue;
+    let label;
+    if (role === "bot" || role === "assistant") label = "BOT";
+    else if (role === "user" || role === "human") label = "PARTICIPANT";
+    else continue;
+    out.push(`${label}: ${text}`);
+  }
+  return out.join("\n");
+}
+
+// Build the plain-text header + body for a single call object as
+// returned by GET /call/:id. Returns the full string ready to send.
+function formatCallAsPlainText(call) {
+  const callId = call?.id || "unknown";
+  const startedAt = call?.startedAt || call?.createdAt || "";
+  const endedAt = call?.endedAt || "";
+  let durationSeconds = "";
+  if (startedAt && endedAt) {
+    const ms = new Date(endedAt).getTime() - new Date(startedAt).getTime();
+    if (!isNaN(ms) && ms > 0) durationSeconds = String(Math.round(ms / 1000));
+  }
+  const phone = call?.customer?.number || call?.phoneNumber?.number || "";
+  const liveVars =
+    call?.assistantOverrides?.variableValues
+    || call?.assistant?.variableValues
+    || {};
+  const participantName = liveVars.PARTICIPANT_NAME || "";
+  const activeSession = liveVars.ACTIVE_SESSION || "";
+  const callKind = liveVars.CALL_KIND || "interview";
+  const status = call?.status || call?.endedReason || "unknown";
+  const participantLabel = [participantName, phone].filter(Boolean).join(" / ");
+
+  // Prefer the rendered string transcript; fall back to assembling
+  // from messages. If neither is present, the transcript hasn't been
+  // generated yet (call still in progress or extraction pending).
+  let transcriptText =
+    call?.artifact?.transcript
+    || call?.transcript
+    || "";
+  let transcriptSource = "artifact.transcript";
+  if (!transcriptText) {
+    const msgs = call?.artifact?.messages || call?.messages;
+    if (Array.isArray(msgs) && msgs.length > 0) {
+      transcriptText = assembleTranscriptFromMessages(msgs);
+      transcriptSource = "artifact.messages";
+    }
+  }
+  transcriptText = normalizeSpeakerLabels(transcriptText);
+
+  const headerLines = [
+    `CALL ID: ${callId}`,
+    `CALL DATE: ${startedAt}`,
+    `DURATION: ${durationSeconds ? durationSeconds + "s" : "unknown"}`,
+    `PARTICIPANT: ${participantLabel || "unknown"}`,
+    `SESSION: ${activeSession || "unknown"} (kind=${callKind})`,
+    `STATUS: ${status}`
+  ];
+
+  if (!transcriptText) {
+    headerLines.push(`TRANSCRIPT: NOT_AVAILABLE (reason=${status})`);
+    return headerLines.join("\n") + "\n";
+  }
+
+  return [
+    ...headerLines,
+    `TRANSCRIPT_SOURCE: ${transcriptSource} (role-rolled-up, not chronological)`,
+    "",
+    "--- TRANSCRIPT ---",
+    "",
+    transcriptText
+  ].join("\n") + "\n";
+}
+
+/**
+ * GET /transcript/:callId
+ * Fetches a single Vapi call and returns a plain-text transcript view.
+ * Designed for Claude's web_fetch tool — text/plain, no JSON wrapping.
+ */
+app.get("/transcript/:callId", async (req, res) => {
+  res.type("text/plain");
+  try {
+    if (transcriptProxyAuthFails(req)) {
+      return res.status(401).send("ERROR: Unauthorized — invalid or missing ?token=\n");
+    }
+    if (!VAPI_API_KEY) {
+      return res.status(500).send("ERROR: Server configuration error — VAPI_API_KEY not set\n");
+    }
+    const { callId } = req.params;
+    if (!callId) return res.status(400).send("ERROR: Missing callId\n");
+
+    const resp = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(callId)}`, {
+      headers: { Authorization: `Bearer ${VAPI_API_KEY}` }
+    });
+    if (resp.status === 404) {
+      return res.status(404).send(`ERROR: Call not found — ID ${callId}\n`);
+    }
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      return res.status(502).send(`ERROR: Vapi API error — ${resp.status} ${body.slice(0, 200)}\n`);
+    }
+    const call = await resp.json();
+    return res.send(formatCallAsPlainText(call));
+  } catch (e) {
+    console.error("GET /transcript/:callId failed:", e);
+    return res.status(500).send(`ERROR: ${String(e.message || e)}\n`);
+  }
+});
+
+/**
+ * GET /transcripts/recent?n=5
+ * Lists the N most recent calls (default 5, capped at 10) and returns
+ * their transcripts in a concatenated plain-text view.
+ */
+app.get("/transcripts/recent", async (req, res) => {
+  res.type("text/plain");
+  try {
+    if (transcriptProxyAuthFails(req)) {
+      return res.status(401).send("ERROR: Unauthorized — invalid or missing ?token=\n");
+    }
+    if (!VAPI_API_KEY) {
+      return res.status(500).send("ERROR: Server configuration error — VAPI_API_KEY not set\n");
+    }
+    const requested = parseInt(req.query.n, 10);
+    const n = Math.max(1, Math.min(10, isNaN(requested) ? 5 : requested));
+
+    // Vapi's list endpoint returns calls newest-first by default; we
+    // also pass sortOrder=desc explicitly for clarity. The list payload
+    // includes artifact.transcript on completed calls.
+    const listResp = await fetch(
+      `https://api.vapi.ai/call?limit=${n}&sortOrder=desc`,
+      { headers: { Authorization: `Bearer ${VAPI_API_KEY}` } }
+    );
+    if (!listResp.ok) {
+      const body = await listResp.text().catch(() => "");
+      return res.status(502).send(`ERROR: Vapi API error — ${listResp.status} ${body.slice(0, 200)}\n`);
+    }
+    const calls = await listResp.json();
+    if (!Array.isArray(calls) || calls.length === 0) {
+      return res.send(`RECENT CALLS — 0 results\n\nNo calls found.\n`);
+    }
+
+    const sections = calls.map((call, i) => {
+      const body = formatCallAsPlainText(call);
+      return `CALL ${i + 1}\n${body}`;
+    });
+    const out = `RECENT CALLS — ${calls.length} results\n\n---\n\n`
+      + sections.join("\n---\n\n");
+    return res.send(out);
+  } catch (e) {
+    console.error("GET /transcripts/recent failed:", e);
+    return res.status(500).send(`ERROR: ${String(e.message || e)}\n`);
+  }
 });
 
 /**
