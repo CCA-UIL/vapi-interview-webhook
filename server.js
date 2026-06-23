@@ -117,6 +117,7 @@ function statusToNotesLabel(status) {
     case "scheduled":             return "";
     case "in_progress":           return "";
     case "cancelled":             return "Cancelled";
+    case "aborted_missing_context": return "ABORTED — prior session summary missing";
     default:                      return status || "";
   }
 }
@@ -3125,11 +3126,43 @@ app.post("/vapi", async (req, res) => {
         const participantName =
           message?.call?.assistantOverrides?.variableValues?.PARTICIPANT_NAME || "";
 
+        // Load PRIOR_SESSIONS_CONTEXT from sessions.summary at schedule
+        // time. For long-fuse schedules (production: ~3 days later), the
+        // current session's summary will be persisted well before the
+        // dial fires. For short-fuse test schedules ("call me back in
+        // one minute"), the summary may not be ready yet — in that case
+        // the empty context flows through and /timing/fire-callback
+        // will re-hydrate at actual dial time, aborting if STILL empty.
+        let nextPriorContext = "";
+        let nextPriorMissing = [];
+        try {
+          const { data: pNext } = await supabase
+            .from("participants")
+            .select("id")
+            .eq("phone_number", customerNumber)
+            .maybeSingle();
+          if (pNext?.id) {
+            const loaded = await loadPriorSessionsContext({
+              participantId: pNext.id,
+              sessionNumber: nextSession
+            });
+            nextPriorContext = loaded.context || "";
+            nextPriorMissing = loaded.missing || [];
+            if (nextPriorMissing.length) {
+              console.warn("schedule_next_session: prior sessions missing summary at schedule time (will re-check at dial time)", {
+                customerNumber, nextSession, missing: nextPriorMissing
+              });
+            }
+          }
+        } catch (e) {
+          console.error("schedule_next_session: loadPriorSessionsContext failed:", e);
+        }
+
         // Next session is its own first-of-its-kind contact, not an IS_CALLBACK
         // retry. Build variableValues accordingly.
         const nextSessionVars = buildVariableValues({
           activeSession: nextSession,
-          priorSessionsContext: "",
+          priorSessionsContext: nextPriorContext,
           isCallback: false,
           participantName,
           country: inferCountryFromPhone(customerNumber)
@@ -3279,6 +3312,17 @@ app.post("/vapi", async (req, res) => {
           || call?.analysis?.summary
           || message?.call?.analysis?.summary
           || null;
+        // Defense-in-depth: detect the prompt-side "I don't have my
+        // notes from our last conversation" signature phrase. If the bot
+        // hit the HARD GUARD in session_2_opening_protocol /
+        // session_3_opening_protocol because PRIOR_SESSIONS_CONTEXT was
+        // empty, the transcript will contain that phrase verbatim. Map
+        // to a dedicated terminal status so the dashboard surfaces the
+        // failure mode distinctly (rather than logging "completed" on a
+        // call that aborted in the first 10 seconds).
+        const promptAbortedMissingContext = (transcript || "")
+          .toLowerCase()
+          .includes("i don't have my notes from our last conversation");
         let finalStatus;
         if (existing && toolSetTerminals.has(existing.status)) {
           finalStatus = existing.status;
@@ -3286,6 +3330,17 @@ app.post("/vapi", async (req, res) => {
             completed_at: new Date().toISOString(),
             transcript: transcriptStructured || (transcript ? { plain: transcript } : null),
             summary: analysisSummary
+          });
+        } else if (promptAbortedMissingContext) {
+          finalStatus = "aborted_missing_context";
+          await updateSessionByCallId(callId, {
+            status: finalStatus,
+            completed_at: new Date().toISOString(),
+            transcript: transcriptStructured || (transcript ? { plain: transcript } : null),
+            summary: analysisSummary
+          });
+          console.error("Session aborted by prompt guard — empty PRIOR_SESSIONS_CONTEXT", {
+            callId, customerNumber
           });
         } else {
           finalStatus = mapEndedReasonToStatus(endedReason);
@@ -3775,6 +3830,64 @@ app.post("/timing/fire-callback", async (req, res) => {
     const callKind = variableValues?.CALL_KIND || "interview";
     const resumedFromTranscript = variableValues?.RESUMED_FROM_TRANSCRIPT || "";
     const hasResumeContext = resumedFromTranscript.trim().length > 0;
+
+    // Dial-time safety: for Session 2/3 interview calls, re-hydrate
+    // PRIOR_SESSIONS_CONTEXT from the latest sessions.summary. The
+    // schedule_next_session that queued this dial may have fired before
+    // the prior session's summary extraction completed (race condition
+    // seen with short-fuse "call me back in one minute" test cycles).
+    // If after re-hydration the context is STILL empty, abort the dial
+    // entirely — running Session 2/3 with no prior context produces
+    // hallucinated references to non-existent prior content
+    // (precedent: Obinna's Session 2 call 019ee4fe — "you mentioned
+    // managing everything for your family" when he'd actually said he
+    // shares chores equally with his sister).
+    if (callKind === "interview" && activeSession > 1) {
+      try {
+        const { data: pFC } = await supabase
+          .from("participants")
+          .select("id")
+          .eq("phone_number", customerNumber)
+          .maybeSingle();
+        if (pFC?.id) {
+          const loaded = await loadPriorSessionsContext({
+            participantId: pFC.id,
+            sessionNumber: activeSession
+          });
+          const fresh = (loaded.context || "").trim();
+          if (fresh) {
+            variableValues.PRIOR_SESSIONS_CONTEXT = fresh;
+          } else {
+            // Still empty — abort.
+            console.error("ABORT dial: Session", activeSession, "has empty PRIOR_SESSIONS_CONTEXT after re-hydration", {
+              customerNumber,
+              missing: loaded.missing,
+              warnings: loaded.warnings
+            });
+            try {
+              await supabase
+                .from("scheduled_calls")
+                .update({ status: "aborted_missing_context" })
+                .eq("participant_id", pFC.id)
+                .eq("session_number", activeSession)
+                .is("vapi_call_id", null);
+            } catch (e) {
+              console.error("Failed to mark scheduled_calls aborted:", e);
+            }
+            return res.status(409).json({
+              ok: false,
+              error: "aborted_missing_context",
+              message: `Session ${activeSession} dial aborted — prior session summaries not available (missing: ${JSON.stringify(loaded.missing)}). Operator must re-dial via /start-call once summaries are present.`
+            });
+          }
+        }
+      } catch (e) {
+        console.error("/timing/fire-callback: PRIOR_SESSIONS_CONTEXT re-hydration failed:", e);
+        // Fall through and let the dial proceed — defensive, since
+        // we'd rather over-dial than block on a transient DB error.
+      }
+    }
+
     const firstMessage = buildFirstMessageOverride({ hasName, isCallback, autoRetryAfterDrop, hasResumeContext });
     const assistantOverrides = {
       variableValues,
