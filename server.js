@@ -1846,14 +1846,38 @@ app.get("/transcripts/recent", async (req, res) => {
     const requested = parseInt(req.query.n, 10);
     const n = Math.max(1, Math.min(10, isNaN(requested) ? 5 : requested));
 
-    // Vapi's list endpoint returns calls newest-first by default. No
-    // sortOrder param exists (passing one returns 400 "property
-    // sortOrder should not exist"). The list payload includes
-    // artifact.transcript on completed calls.
-    const listResp = await fetch(
-      `https://api.vapi.ai/call?limit=${n}`,
-      { headers: { Authorization: `Bearer ${VAPI_API_KEY}` } }
-    );
+    // Vapi's list endpoint returns calls newest-first by default but
+    // scanning the full org history is slow — we've seen Cloudflare 504s
+    // when the param is unscoped. Constrain to the last DAYS window
+    // (default 7, overridable via ?days=N) so the scan is bounded. Same
+    // createdAtGe param used by the dashboard's reconciliation pass at
+    // /scheduled-calls.
+    const days = Math.max(1, Math.min(30, parseInt(req.query.days, 10) || 7));
+    const sinceIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const listUrl = `https://api.vapi.ai/call?limit=${n}&createdAtGe=${encodeURIComponent(sinceIso)}`;
+
+    // 30s server-side timeout so we fail with a clean message instead
+    // of waiting ~100s for Cloudflare's gateway timeout to surface a
+    // raw HTML error page.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    let listResp;
+    try {
+      listResp = await fetch(listUrl, {
+        headers: { Authorization: `Bearer ${VAPI_API_KEY}` },
+        signal: controller.signal
+      });
+    } catch (e) {
+      clearTimeout(timeout);
+      if (e.name === "AbortError") {
+        return res.status(504).send(
+          `ERROR: Vapi list-calls timed out after 30s (days=${days}, n=${n}). ` +
+          `Try a smaller window: ?days=1&n=1\n`
+        );
+      }
+      throw e;
+    }
+    clearTimeout(timeout);
     if (!listResp.ok) {
       const body = await listResp.text().catch(() => "");
       return res.status(502).send(`ERROR: Vapi API error — ${listResp.status} ${body.slice(0, 200)}\n`);
