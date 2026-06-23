@@ -1909,7 +1909,7 @@ app.get("/transcripts/recent", async (req, res) => {
       const body = formatCallAsPlainText(call);
       return `CALL ${i + 1}\n${body}`;
     });
-    const out = `RECENT CALLS — ${calls.length} results\n\n---\n\n`
+    const out = `RECENT CALLS — ${hydrated.length} results\n\n---\n\n`
       + sections.join("\n---\n\n");
     return res.send(out);
   } catch (e) {
